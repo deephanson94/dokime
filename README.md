@@ -33,17 +33,56 @@ pip install .            # gives you the `dokime` command
 
 ## Adopting in an existing repo
 
-dokime is added to a repository that already has history, a `CLAUDE.md`, and
-possibly Claude Code hooks. Nothing is written until you say so.
+dokime is added to a repository that already has history, its own docs, and
+possibly Claude Code hooks. Nothing is written until you say so, and every
+piece is optional.
+
+Decide first where dokime lives. There are two honest placements:
+
+| | Installed on the machine | Vendored in the repo |
+|---|---|---|
+| Command | `pip install git+https://github.com/deephanson94/dokime` | `cp dokime.py your-repo/tools/dokime.py` |
+| Hook runs | `dokime session-start` | `python3 "$CLAUDE_PROJECT_DIR/tools/dokime.py" session-start` |
+| Repo carries | records only | records plus a 600-line Python file |
+| Survives a clone | only where dokime is installed | yes, wherever `python3` exists |
+| Fits | a solo repo, a quick trial, a Python repo | a shared repo whose contributors must not need an install, at the cost of a Python file in, say, a Go tree |
+
+In either placement a hook can be missing or broken. SessionStart's error goes
+to the user's terminal, not the agent, so watch for it. `check` prints
+`hooks: configured|absent` from the repo's settings, and flags `clock-absent`
+when a unit is open or met and the clock has never ticked. A hook that ticked
+once and later broke raises nothing; a repo with no units reads clean.
+
+`init` picks the hook command by where it is run from: `dokime` if that is on
+PATH, else a repo-relative path if the file is inside the repo, else it refuses
+to write hooks and prints the snippet. So run init from the copy you mean to
+keep, and do not have a stray `dokime` on PATH when vendoring.
+
+A worked example, installed form, in a Go repo with its own process document
+and no CLAUDE.md:
 
 ```
-cd your-repo
-pip install /path/to/dokime        # or: cp /path/to/dokime/dokime.py .
-dokime init                        # report only: what is missing, and the exact diff per file
-dokime init --write=all            # the intent interview needs a terminal or DOKIME_INTERVIEW
-dokime check                       # baseline; exit 0 on a clean adoption
+pip install git+https://github.com/deephanson94/dokime
+cd your-go-repo
+dokime init                                   # report only: every piece missing, one diff each
+dokime init --write=units,handoffs,hooks,gitignore
+# intent.md written by hand: four headings that point at README, SPEC and CI
+# rather than restating them; dokime checks only that the headings exist
+# the three working rules went into the repo's process doc, not a new CLAUDE.md
+dokime check                                  # exit 0: intent present, no units yet
 git add -A && git commit -m "Adopt dokime"
 ```
+
+Two things that example chose, and why:
+
+- No `CLAUDE.md`. The repo deliberately had none. The `claude-md` piece was left
+  unwritten and the three lines went into the repo's own process doc. Claude
+  Code auto-loads only `CLAUDE.md`, so the agent gets the hook's status block
+  but no standing instruction; `init --write=claude-md` adds the
+  marker-delimited block later if wanted.
+- No first unit. A unit whose condition is "the adoption files exist" is true
+  the moment it is written and certifies nothing. The next real change opens
+  the first unit with a real test as its condition.
 
 What `init` does to files you already have:
 
@@ -56,22 +95,17 @@ What `init` does to files you already have:
 - `.gitignore`: one line, `.dokime/`, is appended if absent. The session clock
   lives there, uncommitted: it is per checkout (each git worktree has its own),
   not counted across clones or in CI, and it can be edited without a diff. It
-  is a counter, not an audit record. `check` prints `hooks: absent` when no
-  dokime hook is configured and flags `clock-absent` when a unit is open and no
-  clock has ever ticked, so a missing hook cannot read as a clean check.
+  is a counter, not an audit record.
 - Existing commits and branches: never touched. `check` reads history and
-  writes nothing to git.
-
-The hook command depends on where dokime lives. If `dokime` is on PATH the hook
-runs `dokime session-start`. Otherwise, with `dokime.py` inside the repo, it
-runs `python3 "$CLAUDE_PROJECT_DIR/dokime.py" session-start`, which survives a
-clone; with `dokime.py` elsewhere it is an absolute path, which does not.
+  writes nothing to git. On a shallow clone it prints `history: shallow`, and
+  `check --at stop` flags `history-shallow` once units exist because the pin
+  rule cannot run there; give CI `fetch-depth: 0`.
 
 The first session: open a unit and commit `units/`, start Claude Code and expect
 the status block in its context, work and commit, end with
-`handoffs/YYYY-MM-DD-<topic>.md` containing `unit: <name>`, then close the unit
-with the work commit as evidence. dokime records and reports; it does not stop
-the agent.
+`handoffs/YYYY-MM-DD-<topic>.md` containing `unit: <name>` (your local date),
+then close the unit with the work commit as evidence. dokime records and
+reports; it does not stop the agent.
 
 `dokime uninstall` removes the hooks, the CLAUDE.md block and the `.gitignore`
 line, and keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`.
