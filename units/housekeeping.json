@@ -1,0 +1,16 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": "2026-09-13T14:56:33+00:00",
+  "closed_by": "deephanson94",
+  "done_condition": "run: test -f .github/dependabot.yml && grep -q dependabot handoffs/2026-09-13-build.md",
+  "done_condition_sha256": "57d9166aa0ba374ea3a347201ba6a4a2c2e4c679ef14ff856fc1136ad2e5399b",
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "5ed976b"
+    }
+  ],
+  "name": "housekeeping",
+  "opened_at": "2026-09-13T14:54:48+00:00",
+  "status": "closed"
+}
