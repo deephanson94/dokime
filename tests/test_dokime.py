@@ -51,6 +51,11 @@ class RepoCase(unittest.TestCase):
     def head(self):
         return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
 
+    def start(self):
+        sys.stdin = io.StringIO('{"source": "startup"}')
+        self.assertEqual(run("session-start")[0], 0)
+        sys.stdin = io.StringIO("")
+
     def work_commit(self, name="w.txt", when="2026-06-01T00:00:00+00:00"):
         write(name, name + "\n")
         git("add", "-A")
@@ -186,6 +191,9 @@ class CountTest(RepoCase):
                               ["2026-03-01", "2026-03-02", "2026-03-02"])
         self.assertEqual((r["sessions"], r["handoffs"], r["commit_days"]), (3, 2, 2))
         self.assertIn("over-ceiling", r["flags"])
+        r = dokime.check_unit(u, "all", starts[:1], [("2026-03-0%d" % d, "f", "u") for d in (1, 2, 3, 4)], [])
+        self.assertEqual(r["sessions"], 4)  # handoffs outnumber the clock: handoffs win
+        self.assertIn("over-ceiling", r["flags"])
         write(dokime.CLOCK, "\n".join(starts) + "\n")
         rep = dokime.run_check("all")
         self.assertEqual(rep["sessions"]["clock"], 3)
@@ -203,14 +211,26 @@ class CountTest(RepoCase):
         self.assertFalse(dokime.unit_open_on(units, "u", "2026-02-28"))
         self.assertFalse(dokime.unit_open_on(units, "ghost", "2026-03-02"))
 
-    def test_session_start_ticks_clock_on_startup_and_clear_only(self):
+    def test_session_start_tick_rules(self):
+        os.environ["DOKIME_NOW"] = "2026-03-01T09:00:00+00:00"
         sys.stdin = io.StringIO("")
-        self.assertEqual(run("session-start")[0], 0)  # no payload: manual run ticks
-        for source, ticks in (("resume", 1), ("compact", 1), ("startup", 2), ("clear", 3)):
+        code, out, _ = run("session-start", "--json")   # no payload: never ticks
+        self.assertEqual((code, json.loads(out)["ticked"], dokime.clock()), (0, False, None))
+        for source, when, ticks in (("startup", "2026-03-01T09:00:00+00:00", 1),
+                                    ("resume", "2026-03-01T12:00:00+00:00", 1),   # 3h later: same session
+                                    ("compact", "2026-03-01T13:00:00+00:00", 1),
+                                    ("resume", "2026-03-02T09:00:00+00:00", 2),   # next morning: new session
+                                    ("clear", "2026-03-02T09:30:00+00:00", 3),
+                                    ("bogus", "2026-03-03T09:30:00+00:00", 3)):
+            os.environ["DOKIME_NOW"] = when
             sys.stdin = io.StringIO(json.dumps({"source": source}))
             code, out, _ = run("session-start", "--json")
-            self.assertEqual((code, json.loads(out)["ticked"]), (0, source in ("startup", "clear")))
-            self.assertEqual(len(dokime.clock()), ticks, source)
+            self.assertEqual((code, len(dokime.clock())), (0, ticks), source)
+        os.environ["DOKIME_NOW"] = "2026-03-02T10:00:00+00:00"   # 30 min after the last tick
+        sys.stdin = io.StringIO('{"source": "resume"}')
+        code, out, _ = run("session-start")
+        self.assertTrue(out.startswith("dokime: ok |"), out)   # clean resume prints the one-liner
+        self.assertEqual(len(dokime.clock()), 3)
         sys.stdin = sys.__stdin__
 
 
@@ -343,7 +363,7 @@ class InitTest(RepoCase):
         write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
         write("CLAUDE.md", "# mine\n")
         run("init", "--write=all")
-        run("session-start")
+        self.start()
         code, out, _ = run("uninstall")
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(dokime.read(dokime.SETTINGS)), {"permissions": {"allow": ["Bash"]}})
@@ -442,19 +462,19 @@ class RegressionTest(RepoCase):
         opened = self.open_at("u", "2026-03-01T00:00:00+00:00")
         for i in (1, 2, 3):
             os.environ["DOKIME_NOW"] = "2026-03-0%dT09:00:00+00:00" % (i + 1)
-            run("session-start")
+            self.start()
         rep = dokime.run_check("all")
         self.assertEqual((rep["units"][0]["sessions"], rep["sessions"]["clock"]), (3, 3))
         self.assertNotIn("over-ceiling(u)", rep["flags"])
         os.environ["DOKIME_NOW"] = "2026-03-05T09:00:00+00:00"
-        run("session-start")
+        self.start()
         self.assertIn("over-ceiling(u)", dokime.run_check("all")["flags"])
 
     def test_divergence_ignores_history_before_the_clock(self):
         for d in ("2026-01-02", "2026-01-03", "2026-01-04"):
             self.work_commit(d + ".txt", when=d + "T00:00:00+00:00")
         os.environ["DOKIME_NOW"] = "2026-02-01T09:00:00+00:00"
-        run("session-start")
+        self.start()
         self.assertFalse(dokime.run_check("all")["sessions"]["divergent"])
 
     def test_deleted_unit_is_flagged_and_names_must_match(self):

@@ -3,7 +3,7 @@
 
 Stdlib + git only. See intent.md for goals, non-goals, invariants.
 """
-import argparse, datetime, difflib, hashlib, json, os, re, select, shutil, subprocess, sys, tempfile
+import argparse, datetime, difflib, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 
 UNITS, HANDOFFS, INTENT = "units", "handoffs", "intent.md"
 CLOCK = os.path.join(".dokime", "sessions.log")
@@ -346,10 +346,11 @@ def check_unit(u, at, starts, hs, days):
         r["flags"].append("met-but-open")
     if u["status"] != "closed" and at != "stop":
         opened = u["opened_at"]
-        r["sessions"] = None if starts is None else max(1, sum(1 for t in starts if t > opened) + any(t <= opened for t in starts))
         r["handoffs"] = sum(1 for h in hs if h[0] >= utc_date(opened))
         r["commit_days"] = len(set(d for d in days if d >= utc_date(opened)))
         r["ceiling"] = u["ceiling_sessions"]
+        r["sessions"] = None if starts is None else max(  # highest source wins; the agent can only inflate
+            1, sum(1 for t in starts if t > opened) + any(t <= opened for t in starts), r["handoffs"], r["commit_days"])
         if r["sessions"] is not None and r["sessions"] > u["ceiling_sessions"]:
             r["flags"].append("over-ceiling")
     return r
@@ -417,41 +418,40 @@ def cmd_check(a):
     return rep, text
 
 
-def cmd_status(a):
-    rep = run_check("all")
-    n, u = len(rep["flags"]), len(rep["units"])
-    s = rep["sessions"]["clock"]
-    line = "dokime: %s | intent %s | %d unit%s | sessions %s" % (
+def status_line(rep):
+    n, u, s = len(rep["flags"]), len(rep["units"]), rep["sessions"]["clock"]
+    return "dokime: %s | intent %s | %d unit%s | sessions %s" % (
         "ok" if not n else "%d flag%s: %s" % (n, "s"[n == 1:], " ".join(rep["flags"])),
         rep["intent"], u, "s"[u == 1:], "unknown" if s is None else s)
-    return rep, line
+
+
+def cmd_status(a):
+    rep = run_check("all")
+    return rep, status_line(rep)
 
 
 def hook_payload():
-    """JSON object a hook receives on stdin; {} for a tty, no data within 1s, or bad input."""
+    """JSON object a hook receives on stdin; {} for a tty or bad input."""
     try:
-        if sys.stdin.isatty():
-            return {}
-        try:
-            ready = select.select([sys.stdin], [], [], 1)[0]
-        except (OSError, TypeError, ValueError):
-            ready = True
-        d = json.load(sys.stdin) if ready else {}
+        d = {} if sys.stdin.isatty() else json.load(sys.stdin)
         return d if isinstance(d, dict) else {}
     except (ValueError, OSError):
         return {}
 
 
 def cmd_session_start(a):
-    """SessionStart hook: tick the clock on startup|clear only, print the full check, never block."""
-    source = hook_payload().get("source", "startup")
-    if source in ("startup", "clear"):
+    """SessionStart hook: tick on startup|clear, or on a resume 8h+ after the last tick. Never blocks."""
+    source, starts = hook_payload().get("source"), clock() or []
+    stale = not starts or parse_ts(now()) - parse_ts(starts[-1]) > datetime.timedelta(hours=8)
+    tick = source in ("startup", "clear") or (source == "resume" and stale)
+    if tick:
         os.makedirs(os.path.dirname(CLOCK), exist_ok=True)
         with open(CLOCK, "a") as f:
             f.write("%s %s\n" % (now(), git("rev-parse", "--short", "HEAD") or "-"))
     rep = run_check("all")
-    rep["ticked"] = source in ("startup", "clear")
-    return rep, render(rep)
+    rep["ticked"] = tick
+    full = tick or source == "compact" or rep["flags"]
+    return rep, render(rep) + ("  ticked" if tick else "") if full else status_line(rep)
 
 
 def cmd_stop_hook(a):

@@ -30,7 +30,8 @@ def sh(args, cwd, when=None, stdin=None):
 
 
 def dokime(dest, when, *args):
-    return sh([sys.executable, DOKIME, *args], dest, when)
+    payload = '{"source": "startup"}' if args[0] == "session-start" else None
+    return sh([sys.executable, DOKIME, *args], dest, when, stdin=payload)
 
 
 def commit(dest, when, msg):

@@ -83,10 +83,13 @@ day with no session.
 `dokime init --write=hooks` adds two hooks to `.claude/settings.json`
 (verified against Claude Code 2.1.270):
 
-- `SessionStart` runs `dokime session-start` on every source: it prints the
-  full check into the agent's context, which matters most after `compact`. It
-  ticks the clock only when the source is `startup` or `clear`; a `resume` or
-  `compact` is not a new session. It cannot block.
+- `SessionStart` runs `dokime session-start` on every source. It ticks the
+  clock on `startup` and `clear`, and on a `resume` more than eight hours after
+  the last tick; a `compact` or a quick resume is not a new session. A run with
+  no hook payload never ticks. It prints the full block when it ticks, after
+  `compact`, or when flagged, and one status line on a clean resume. It cannot
+  block. Per unit, the session count is the highest of clock, handoffs and
+  commit days since open, so the agent can only inflate its own count.
 - `Stop` runs `dokime stop-hook`: ledger-integrity rules only (pin, evidence),
   never `run:` conditions. By default it is silent when clean, prints a
   `systemMessage` when flagged, and exits 0. With `--strict` it exits 2, which
