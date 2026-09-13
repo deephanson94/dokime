@@ -46,6 +46,11 @@ def root():
     return top
 
 
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+
 def sha256_text(s):
     return hashlib.sha256(s.encode()).hexdigest()
 
@@ -112,8 +117,7 @@ def load_unit(name):
     if not os.path.exists(p):
         raise DokimeError("no such unit: " + name)
     try:
-        with open(p) as f:
-            d = json.load(f)
+        d = json.loads(read(p))
     except ValueError as ex:
         raise DokimeError("%s: invalid JSON (%s)" % (p, ex))
     errs = validate_unit(d)
@@ -276,7 +280,7 @@ HEADINGS = ("## Goals", "## Non-goals", "## Acceptance criteria", "## Invariants
 def intent_status():
     if not os.path.exists(INTENT):
         return "missing"
-    text = open(INTENT).read()
+    text = read(INTENT)
     return "present" if all(h in text for h in HEADINGS) else "incomplete"
 
 
@@ -286,7 +290,7 @@ def handoffs():
     for f in sorted(os.listdir(HANDOFFS)) if os.path.isdir(HANDOFFS) else []:
         if not re.match(r"^\d{4}-\d{2}-\d{2}-.+\.md$", f):
             continue
-        m = re.search(r"^unit:\s*(\S+)", open(os.path.join(HANDOFFS, f)).read(), re.M | re.I)
+        m = re.search(r"^unit:\s*(\S+)", read(os.path.join(HANDOFFS, f)), re.M | re.I)
         out.append((f[:10], f, m.group(1) if m else None))
     return out
 
@@ -295,7 +299,7 @@ def clock():
     """Session-start timestamps from the hook-written log, or None if absent."""
     if not os.path.exists(CLOCK):
         return None
-    return [ln.split()[0] for ln in open(CLOCK) if ln.strip()]
+    return [ln.split()[0] for ln in read(CLOCK).splitlines() if ln.strip()]
 
 
 def work_dates():

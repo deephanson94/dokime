@@ -1,0 +1,11 @@
+{
+  "ceiling_sessions": 3,
+  "closed_at": null,
+  "closed_by": null,
+  "done_condition": "run: python3 -m unittest discover -s tests -q",
+  "done_condition_sha256": "37404a916a38c47782cd90ed9b975626f8d9064e696101e68eaf656b88ea2d64",
+  "evidence": [],
+  "name": "build",
+  "opened_at": "2026-09-13T12:14:17+00:00",
+  "status": "open"
+}
