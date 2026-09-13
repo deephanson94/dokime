@@ -1,0 +1,16 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": "2026-09-13T15:12:32+00:00",
+  "closed_by": "deephanson94",
+  "done_condition": "run: grep -q '^## Adopting in an existing repo' README.md",
+  "done_condition_sha256": "78376bca38011bdc1456e2b231784cbaf7f08b9cb553985c397445ab23903600",
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "0084de5"
+    }
+  ],
+  "name": "readme-adopt",
+  "opened_at": "2026-09-13T15:10:20+00:00",
+  "status": "closed"
+}
