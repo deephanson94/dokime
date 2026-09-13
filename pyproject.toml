@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dokime"
+version = "0.1.0"
+description = "An agreement, a ledger of work units, and a boundary check for repos worked by AI agents."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+dokime = "dokime:main"
+
+[tool.setuptools]
+py-modules = ["dokime"]

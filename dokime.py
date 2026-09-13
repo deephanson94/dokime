@@ -3,7 +3,7 @@
 
 Stdlib + git only. See intent.md for goals, non-goals, invariants.
 """
-import argparse, datetime, hashlib, json, os, re, subprocess, sys
+import argparse, datetime, difflib, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 
 UNITS, HANDOFFS, INTENT = "units", "handoffs", "intent.md"
 CLOCK = os.path.join(".dokime", "sessions.log")
@@ -430,6 +430,165 @@ class Flagged(DokimeError):
         self.rep, self.code = rep, code
 
 
+# ------------------------------------------------------------ init / scan
+SETTINGS, CLAUDE_MD, GITIGNORE = os.path.join(".claude", "settings.json"), "CLAUDE.md", ".gitignore"
+MARK, ENDMARK = "<!-- dokime -->", "<!-- /dokime -->"
+CLAUDE_LINES = MARK + """
+This repo is governed by dokime: intent.md is the agreement, units/ is the ledger, `dokime check` is the boundary check.
+Open a unit before work (`dokime open <name> --condition "run: ..."`) and end each session with handoffs/YYYY-MM-DD-<topic>.md containing a `unit: <name>` line.
+Never edit intent.md or a unit's done_condition without asking.
+""" + ENDMARK + "\n"
+HANDOFF_TEMPLATE = "unit: <name>\n\n## Done\n\n## Next\n"
+QUESTIONS = (("Goals", "What must this repo achieve? (one per line, blank line ends)"),
+             ("Non-goals", "What will it deliberately not do?"),
+             ("Acceptance criteria", "What observable results mean done?"),
+             ("Invariants", "What must never change while working?"))
+PIECES = ("intent", "units", "handoffs", "hooks", "claude-md", "gitignore")
+
+
+def dokime_cmd():
+    if shutil.which("dokime"):
+        return "dokime"
+    here, top = os.path.abspath(__file__), os.getcwd()
+    if here.startswith(top + os.sep):
+        return 'python3 "$CLAUDE_PROJECT_DIR/%s"' % os.path.relpath(here, top)
+    return 'python3 "%s"' % here
+
+
+def hook_config():
+    c = dokime_cmd()
+    return {"SessionStart": [{"matcher": "startup|resume|clear",
+                              "hooks": [{"type": "command", "command": c + " session-start"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": c + " stop-hook"}]}]}
+
+
+def interview():
+    if not sys.stdin.isatty() and os.environ.get("DOKIME_INTERVIEW") is None:
+        raise DokimeError("intent.md interview needs a terminal (or DOKIME_INTERVIEW=<file> answers)")
+    src = open(os.environ["DOKIME_INTERVIEW"]) if os.environ.get("DOKIME_INTERVIEW") else sys.stdin
+    out = ["# intent", ""]
+    for title, q in QUESTIONS:
+        print("%s: %s" % (title, q), file=sys.stderr)
+        out.append("## " + title)
+        while True:
+            line = src.readline()
+            if not line.strip():
+                break
+            out.append("- " + line.strip())
+        out.append("")
+    draft = "\n".join(out)
+    print("---- draft intent.md ----\n" + draft + "---- write it? [y/N] ", end="", file=sys.stderr)
+    if src.readline().strip().lower() != "y":
+        raise DokimeError("intent.md not written")
+    return draft
+
+
+def planned_writes():
+    """{piece: (path, new_text_or_None, note)}; None means nothing to do."""
+    plan = {}
+    st = intent_status()
+    plan["intent"] = (INTENT, None if st == "present" else "<interview>", st)
+    for piece, d, fn, body in (("units", UNITS, ".gitkeep", ""), ("handoffs", HANDOFFS, "TEMPLATE.md", HANDOFF_TEMPLATE)):
+        plan[piece] = (os.path.join(d, fn), None if os.path.isdir(d) else body, "present" if os.path.isdir(d) else "missing")
+    cur = json.loads(read(SETTINGS)) if os.path.exists(SETTINGS) else {}
+    if any("dokime" in json.dumps(h) for h in (cur.get("hooks") or {}).values()):
+        plan["hooks"] = (SETTINGS, None, "present")
+    elif cur.get("hooks"):
+        plan["hooks"] = (SETTINGS, None, "MANUAL: existing hooks; add this yourself:\n" + json.dumps(hook_config(), indent=2))
+    else:
+        cur["hooks"] = hook_config()
+        plan["hooks"] = (SETTINGS, json.dumps(cur, indent=2) + "\n", "missing")
+    md = read(CLAUDE_MD) if os.path.exists(CLAUDE_MD) else ""
+    plan["claude-md"] = (CLAUDE_MD, None if MARK in md else md.rstrip("\n") + ("\n\n" if md else "") + CLAUDE_LINES, "present" if MARK in md else "missing")
+    gi = read(GITIGNORE) if os.path.exists(GITIGNORE) else ""
+    has = ".dokime" in [ln.strip().rstrip("/") for ln in gi.splitlines()]
+    plan["gitignore"] = (GITIGNORE, None if has else gi + ("" if gi.endswith("\n") or not gi else "\n") + ".dokime/\n", "present" if has else "missing")
+    return plan
+
+
+def cmd_init(a):
+    want = PIECES if a.write == "all" else tuple(a.write.split(",")) if a.write else ()
+    if set(want) - set(PIECES):
+        raise DokimeError("unknown piece in --write; choose from " + ",".join(PIECES))
+    plan, report, lines = planned_writes(), {}, []
+    for piece in PIECES:
+        path, new, note = plan[piece]
+        if piece in want and new is not None:
+            if new == "<interview>":
+                new = interview()
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w") as f:
+                f.write(new)
+            report[piece], line = "written", "%s: written %s" % (piece, path)
+        else:
+            report[piece], line = note, "%s: %s" % (piece, note)
+            if new and new != "<interview>" and not want:
+                old = read(path).splitlines() if os.path.exists(path) else []
+                line += "\n" + "\n".join(difflib.unified_diff(old, new.splitlines(), path, path, lineterm=""))
+        lines.append(line)
+    if not want:
+        lines.append("nothing written; use --write=all or --write=" + ",".join(PIECES))
+    return {"pieces": report, "written": bool(want)}, "\n".join(lines)
+
+
+def cmd_uninstall(a):
+    removed = []
+    if os.path.exists(SETTINGS):
+        cur = json.loads(read(SETTINGS))
+        for ev in list(cur.get("hooks") or {}):
+            kept = [h for h in cur["hooks"][ev] if "dokime" not in json.dumps(h)]
+            if len(kept) != len(cur["hooks"][ev]):
+                removed.append("hook " + ev)
+            cur["hooks"][ev] = kept
+        cur["hooks"] = {k: v for k, v in (cur.get("hooks") or {}).items() if v}
+        if not cur["hooks"]:
+            del cur["hooks"]
+        with open(SETTINGS, "w") as f:
+            f.write(json.dumps(cur, indent=2) + "\n")
+    if os.path.exists(CLAUDE_MD) and MARK in read(CLAUDE_MD):
+        md = re.sub(r"\n*" + re.escape(MARK) + r".*?" + re.escape(ENDMARK) + r"\n?", "\n", read(CLAUDE_MD), flags=re.S).strip("\n")
+        if md:
+            with open(CLAUDE_MD, "w") as f:
+                f.write(md + "\n")
+        else:
+            os.remove(CLAUDE_MD)
+        removed.append("CLAUDE.md block")
+    if os.path.isdir(".dokime"):
+        shutil.rmtree(".dokime")
+        removed.append(".dokime/")
+    return {"removed": removed}, "removed: " + (", ".join(removed) or "nothing") + "\nkept: intent.md, units/, handoffs/ (records; delete by hand)"
+
+
+def cmd_scan(a):
+    """Walk back from HEAD running a run: condition in a detached worktree per commit."""
+    if not a.condition.startswith("run:"):
+        raise DokimeError("scan needs an executable condition (run: ...)")
+    shas = (git("rev-list", "--max-count=%d" % a.limit, "HEAD") or "").splitlines()
+    results, tmp = [], tempfile.mkdtemp(prefix="dokime-scan-")
+    try:
+        for sha in shas:
+            wt = os.path.join(tmp, sha[:10])
+            git("worktree", "add", "--detach", "-q", wt, sha, check=True)
+            cwd = os.getcwd()
+            os.chdir(wt)
+            try:
+                results.append((sha, run_condition(a.condition, timeout=a.timeout)))
+            finally:
+                os.chdir(cwd)
+                git("worktree", "remove", "--force", wt)
+            if results[-1][1] != "pass":
+                break
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    passing = [s for s, r in results if r == "pass"]
+    if not passing:
+        return {"earliest_pass": None, "checked": len(results)}, "HEAD: %s  earliest passing: none in %d commit(s)" % (results[0][1] if results else "no commits", len(results))
+    first = passing[-1]
+    when = git("show", "-s", "--format=%cI", first)
+    return {"earliest_pass": first, "date": when, "commits_after": len(passing) - 1, "checked": len(results)}, \
+        "earliest passing: %s %s  commits after it: %d  (checked %d of last %d)" % (first[:10], when, len(passing) - 1, len(results), a.limit)
+
+
 # -------------------------------------------------------------------- cli
 def build_parser():
     p = argparse.ArgumentParser(prog="dokime", description=__doc__.splitlines()[0])
@@ -462,6 +621,13 @@ def build_parser():
     add("session-start", cmd_session_start, "SessionStart hook: tick the clock, print the check")
     s = add("stop-hook", cmd_stop_hook, "Stop hook: integrity rules; blocks only with --strict")
     s.add_argument("--strict", action="store_true", help="exit 2 (blocks) when flagged")
+    s = add("init", cmd_init, "report missing pieces; write only with --write")
+    s.add_argument("--write", metavar="PIECES", help="all or comma list of " + ",".join(PIECES))
+    add("uninstall", cmd_uninstall, "remove hooks, CLAUDE.md block and .dokime/; keep records")
+    s = add("scan", cmd_scan, "find the earliest recent commit where a run: condition passes")
+    s.add_argument("--condition", required=True)
+    s.add_argument("--limit", type=int, default=20, help="commits to walk back (default 20)")
+    s.add_argument("--timeout", type=int, default=120, help="seconds per run (default 120)")
     return p
 
 

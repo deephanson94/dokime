@@ -272,3 +272,84 @@ class ReplayTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InitTest(RepoCase):
+    def test_bare_repo_init_then_check(self):
+        shutil.rmtree(".git"); os.remove("intent.md"); os.remove("base.txt")
+        git("init", "-q", ".")
+        code, out, _ = run("check")
+        self.assertEqual((code, "intent-missing" in out), (1, True))
+        code, out, _ = run("init")
+        self.assertEqual(code, 0)
+        self.assertIn("nothing written", out)
+        self.assertIn("+++ .claude/settings.json", out)
+        self.assertFalse(os.path.exists(".claude"))
+        self.assertEqual(run("init", "--write=intent")[0], 1)  # no terminal, no answers
+        write("answers.txt", "g1\ng2\n\nn1\n\na1\n\ni1\n\ny\n")
+        os.environ["DOKIME_INTERVIEW"] = "answers.txt"
+        try:
+            code, out, _ = run("init", "--write=all", "--json")
+        finally:
+            del os.environ["DOKIME_INTERVIEW"]
+        self.assertEqual(code, 0)
+        self.assertEqual(set(json.loads(out)["pieces"].values()), {"written"})
+        self.assertIn("## Goals\n- g1\n- g2\n", dokime.read("intent.md"))
+        self.assertEqual(run("check")[0], 0)
+        hooks = json.loads(dokime.read(dokime.SETTINGS))["hooks"]
+        self.assertEqual(set(hooks), {"SessionStart", "Stop"})
+        self.assertIn("session-start", hooks["SessionStart"][0]["hooks"][0]["command"])
+        self.assertIn(dokime.MARK, dokime.read("CLAUDE.md"))
+        self.assertIn(".dokime/", dokime.read(".gitignore"))
+        code, out, _ = run("init", "--json")
+        self.assertEqual(set(json.loads(out)["pieces"].values()), {"present"})
+
+    def test_interview_declined_writes_nothing(self):
+        os.remove("intent.md")
+        write("answers.txt", "g\n\nn\n\na\n\ni\n\nno\n")
+        os.environ["DOKIME_INTERVIEW"] = "answers.txt"
+        try:
+            self.assertEqual(run("init", "--write=intent")[0], 1)
+        finally:
+            del os.environ["DOKIME_INTERVIEW"]
+        self.assertFalse(os.path.exists("intent.md"))
+
+    def test_existing_hooks_never_merged(self):
+        write(dokime.SETTINGS, '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "echo"}]}]}}')
+        code, out, _ = run("init", "--write=hooks")
+        self.assertEqual(code, 0)
+        self.assertIn("MANUAL", out)
+        self.assertNotIn("dokime", dokime.read(dokime.SETTINGS))
+        write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
+        run("init", "--write=hooks")
+        s = json.loads(dokime.read(dokime.SETTINGS))
+        self.assertEqual((s["permissions"], set(s["hooks"])), ({"allow": ["Bash"]}, {"SessionStart", "Stop"}))
+        self.assertEqual(run("init", "--write=bogus")[0], 1)
+
+    def test_uninstall_keeps_records_and_foreign_config(self):
+        write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
+        write("CLAUDE.md", "# mine\n")
+        run("init", "--write=all")
+        run("session-start")
+        code, out, _ = run("uninstall")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(dokime.read(dokime.SETTINGS)), {"permissions": {"allow": ["Bash"]}})
+        self.assertEqual(dokime.read("CLAUDE.md"), "# mine\n")
+        self.assertFalse(os.path.exists(".dokime"))
+        self.assertTrue(os.path.isdir("units") and os.path.isdir("handoffs") and os.path.exists("intent.md"))
+        run("init", "--write=claude-md")
+        self.assertTrue(dokime.read("CLAUDE.md").startswith("# mine\n\n" + dokime.MARK))
+
+
+class ScanTest(RepoCase):
+    def test_scan_finds_earliest_pass(self):
+        self.work_commit("a.txt"); self.work_commit("ok"); self.work_commit("b.txt")
+        code, out, _ = run("scan", "--condition", "run: test -f ok", "--json")
+        self.assertEqual(code, 0)
+        r = json.loads(out)
+        self.assertEqual((r["commits_after"], r["checked"]), (1, 3))
+        self.assertEqual(r["earliest_pass"][:7], subprocess.check_output(["git", "rev-parse", "--short=7", "HEAD~1"], text=True).strip())
+        code, out, _ = run("scan", "--condition", "run: test -f nope")
+        self.assertIn("earliest passing: none", out)
+        self.assertEqual(run("scan", "--condition", "prose")[0], 1)
+        self.assertEqual(subprocess.check_output(["git", "worktree", "list"], text=True).count("\n"), 1)
