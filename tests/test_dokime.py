@@ -409,12 +409,18 @@ class RegressionTest(RepoCase):
         self.assertIn("before unit opened", dokime.verify_evidence({"kind": "commit", "ref": before}, opened))
 
     def test_naive_and_zulu_timestamps_are_utc(self):
+        import time
         os.environ["TZ"] = "America/New_York"
         try:
+            if hasattr(time, "tzset"):
+                time.tzset()
+            self.assertEqual(time.localtime(0).tm_hour, 19)  # the TZ change took effect
             self.assertEqual(dokime.utc_date("2026-09-13T22:00:00"), "2026-09-13")
             self.assertEqual(dokime.utc_date("2026-09-13T22:00:00Z"), "2026-09-13")
         finally:
             del os.environ["TZ"]
+            if hasattr(time, "tzset"):
+                time.tzset()
 
     def test_close_checks_pin_and_closed_units_are_not_reverified(self):
         opened = self.open_at("u", "2026-03-01T00:00:00+00:00")
