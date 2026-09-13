@@ -3,7 +3,7 @@
 
 Stdlib + git only. See intent.md for goals, non-goals, invariants.
 """
-import argparse, datetime, difflib, hashlib, json, os, re, shutil, subprocess, sys, tempfile
+import argparse, datetime, difflib, hashlib, json, os, re, select, shutil, subprocess, sys, tempfile
 
 UNITS, HANDOFFS, INTENT = "units", "handoffs", "intent.md"
 CLOCK = os.path.join(".dokime", "sessions.log")
@@ -427,23 +427,37 @@ def cmd_status(a):
     return rep, line
 
 
+def hook_payload():
+    """JSON object a hook receives on stdin; {} for a tty, no data within 1s, or bad input."""
+    try:
+        if sys.stdin.isatty():
+            return {}
+        try:
+            ready = select.select([sys.stdin], [], [], 1)[0]
+        except (OSError, TypeError, ValueError):
+            ready = True
+        d = json.load(sys.stdin) if ready else {}
+        return d if isinstance(d, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
 def cmd_session_start(a):
-    """SessionStart hook: append to the clock, print the full check, never block."""
-    os.makedirs(os.path.dirname(CLOCK), exist_ok=True)
-    with open(CLOCK, "a") as f:
-        f.write("%s %s\n" % (now(), git("rev-parse", "--short", "HEAD") or "-"))
+    """SessionStart hook: tick the clock on startup|clear only, print the full check, never block."""
+    source = hook_payload().get("source", "startup")
+    if source in ("startup", "clear"):
+        os.makedirs(os.path.dirname(CLOCK), exist_ok=True)
+        with open(CLOCK, "a") as f:
+            f.write("%s %s\n" % (now(), git("rev-parse", "--short", "HEAD") or "-"))
     rep = run_check("all")
+    rep["ticked"] = source in ("startup", "clear")
     return rep, render(rep)
 
 
 def cmd_stop_hook(a):
     """Stop hook: ledger-integrity rules only; exit 2 with stderr only under --strict."""
-    try:
-        payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
-        if isinstance(payload, dict) and payload.get("stop_hook_active"):
-            return {"skipped": True}, ""
-    except (ValueError, OSError):
-        pass
+    if hook_payload().get("stop_hook_active"):
+        return {"skipped": True}, ""
     rep = run_check("stop")
     if rep["flags"] and a.strict:
         raise Flagged(rep, render(rep), code=2)
@@ -485,8 +499,7 @@ def dokime_cmd():
 
 def hook_config():
     c = dokime_cmd()
-    return {"SessionStart": [{"matcher": "startup|resume|clear",
-                              "hooks": [{"type": "command", "command": c + " session-start"}]}],
+    return {"SessionStart": [{"hooks": [{"type": "command", "command": c + " session-start"}]}],
             "Stop": [{"hooks": [{"type": "command", "command": c + " stop-hook"}]}]}
 
 
@@ -657,7 +670,7 @@ def build_parser():
                    help="stop = ledger integrity only (no run: conditions, no session rules)")
     s.add_argument("--warn-only", action="store_true", help="exit 0 even when flagged")
     add("status", cmd_status, "one-line status")
-    add("session-start", cmd_session_start, "SessionStart hook: tick the clock, print the check")
+    add("session-start", cmd_session_start, "SessionStart hook: print the check; tick the clock on startup|clear")
     s = add("stop-hook", cmd_stop_hook, "Stop hook: integrity rules; blocks only with --strict")
     s.add_argument("--strict", action="store_true", help="exit 2 (blocks) when flagged")
     s = add("init", cmd_init, "report missing pieces; write only with --write")

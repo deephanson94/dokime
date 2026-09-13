@@ -30,6 +30,7 @@ def run(*argv):
 
 class RepoCase(unittest.TestCase):
     def setUp(self):
+        sys.stdin = io.StringIO("")
         self.tmp = tempfile.mkdtemp()
         self.old = os.getcwd()
         os.chdir(self.tmp)
@@ -43,6 +44,7 @@ class RepoCase(unittest.TestCase):
         os.environ.pop("DOKIME_NOW", None)
 
     def tearDown(self):
+        sys.stdin = sys.__stdin__
         os.chdir(self.old)
         shutil.rmtree(self.tmp)
 
@@ -201,10 +203,15 @@ class CountTest(RepoCase):
         self.assertFalse(dokime.unit_open_on(units, "u", "2026-02-28"))
         self.assertFalse(dokime.unit_open_on(units, "ghost", "2026-03-02"))
 
-    def test_session_start_ticks_clock(self):
-        self.assertEqual(run("session-start")[0], 0)
-        self.assertEqual(run("session-start")[0], 0)
-        self.assertEqual(len(dokime.clock()), 2)
+    def test_session_start_ticks_clock_on_startup_and_clear_only(self):
+        sys.stdin = io.StringIO("")
+        self.assertEqual(run("session-start")[0], 0)  # no payload: manual run ticks
+        for source, ticks in (("resume", 1), ("compact", 1), ("startup", 2), ("clear", 3)):
+            sys.stdin = io.StringIO(json.dumps({"source": source}))
+            code, out, _ = run("session-start", "--json")
+            self.assertEqual((code, json.loads(out)["ticked"]), (0, source in ("startup", "clear")))
+            self.assertEqual(len(dokime.clock()), ticks, source)
+        sys.stdin = sys.__stdin__
 
 
 class CheckTest(RepoCase):
