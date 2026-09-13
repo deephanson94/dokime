@@ -54,8 +54,11 @@ What `init` does to files you already have:
 - `CLAUDE.md`: three lines are appended between `<!-- dokime -->` markers. The
   rest of the file is untouched.
 - `.gitignore`: one line, `.dokime/`, is appended if absent. The session clock
-  lives there, uncommitted: it is per checkout, not counted across clones or in
-  CI, and it can be edited without a diff. It is a counter, not an audit record.
+  lives there, uncommitted: it is per checkout (each git worktree has its own),
+  not counted across clones or in CI, and it can be edited without a diff. It
+  is a counter, not an audit record. `check` prints `hooks: absent` when no
+  dokime hook is configured and flags `clock-absent` when a unit is open and no
+  clock has ever ticked, so a missing hook cannot read as a clean check.
 - Existing commits and branches: never touched. `check` reads history and
   writes nothing to git.
 
@@ -89,8 +92,9 @@ dokime uninstall                 # remove hooks, the CLAUDE.md block and the .gi
 Every command takes `--json`.
 
 A handoff is `handoffs/YYYY-MM-DD-<topic>.md`, written at the end of a session,
-with a line `unit: <name>`. Detection is day-granular: two sessions on one day
-are one boundary.
+with a line `unit: <name>`. Use your own local date; commit days are compared in
+the committer's own zone, so the two agree. Detection is day-granular: two
+sessions on one day are one boundary.
 
 `open` refuses a `run:` condition that already passes; a unit needs a condition
 that is false now. `met` is `close` without `closed_at`: the condition and
@@ -113,6 +117,11 @@ handoffs: 3  last 2026-09-03-parser.md  unit build
 sessions: 4 (clock)  handoffs 3  commit-days 3
 flags: met-but-open(build) over-ceiling(build)
 ```
+
+The first line also reports `hooks: configured|absent` and `history: full|shallow`.
+On a shallow clone every pin reads `UNVERIFIABLE (shallow history)` and
+`check --at stop` flags `history-shallow`, since the pin rule cannot run; use
+`fetch-depth: 0` in CI.
 
 `sessions` comes from `.dokime/sessions.log`, which only the SessionStart hook
 appends to. When the hook is not installed it prints `unknown` and the ceiling is

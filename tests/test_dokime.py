@@ -42,8 +42,12 @@ class RepoCase(unittest.TestCase):
         git("add", "-A")
         git("commit", "-qm", "base", when="2026-01-01T00:00:00+00:00")
         os.environ.pop("DOKIME_NOW", None)
+        self.real_file = dokime.__file__
+        shutil.copy(self.real_file, "tools-dokime.py")
+        dokime.__file__ = os.path.abspath("tools-dokime.py")
 
     def tearDown(self):
+        dokime.__file__ = self.real_file
         sys.stdin = sys.__stdin__
         os.chdir(self.old)
         shutil.rmtree(self.tmp)
@@ -249,7 +253,7 @@ class CheckTest(RepoCase):
     def test_status_line(self):
         code, out, _ = run("status")
         self.assertEqual(code, 0)
-        self.assertTrue(out.startswith("dokime: ok | intent present | 0 units | sessions unknown"))
+        self.assertTrue(out.startswith("dokime: ok | intent present | hooks absent | 0 units | sessions unknown"), out)
 
     def test_stop_hook(self):
         run("open", "u", "--condition", "x")
@@ -331,7 +335,7 @@ class InitTest(RepoCase):
         self.assertEqual(run("check")[0], 0)
         hooks = json.loads(dokime.read(dokime.SETTINGS))["hooks"]
         self.assertEqual(set(hooks), {"SessionStart", "Stop"})
-        self.assertIn("session-start", hooks["SessionStart"][0]["hooks"][0]["command"])
+        self.assertEqual(hooks["SessionStart"][0]["hooks"][0]["command"], 'python3 "$CLAUDE_PROJECT_DIR/tools-dokime.py" session-start')
         self.assertIn(dokime.MARK, dokime.read("CLAUDE.md"))
         self.assertIn(".dokime/", dokime.read(".gitignore"))
         code, out, _ = run("init", "--json")
@@ -358,6 +362,11 @@ class InitTest(RepoCase):
         s = json.loads(dokime.read(dokime.SETTINGS))
         self.assertEqual((s["permissions"], set(s["hooks"])), ({"allow": ["Bash"]}, {"SessionStart", "Stop"}))
         self.assertEqual(run("init", "--write=bogus")[0], 1)
+        os.remove(dokime.SETTINGS)
+        dokime.__file__ = self.real_file  # outside the repo and not on PATH
+        code, out, _ = run("init", "--write=hooks")
+        self.assertEqual((code, "neither on PATH nor inside" in out, os.path.exists(dokime.SETTINGS)), (0, True, False))
+        self.assertIn('"dokime session-start"', out)
 
     def test_uninstall_keeps_records_and_foreign_config(self):
         write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
@@ -525,6 +534,61 @@ class RegressionTest(RepoCase):
             code, out, _ = run(*argv, "--json")
             self.assertEqual(code, 0, argv)
             json.loads(out)
+
+    def test_clock_absent_flag_only_with_open_unit(self):
+        self.assertNotIn("clock-absent", dokime.run_check("all")["flags"])   # no units: not claimed
+        self.open_at("u", "2026-03-01T00:00:00+00:00")
+        rep = dokime.run_check("all")
+        self.assertEqual((rep["hooks"], "clock-absent" in rep["flags"]), ("absent", True))
+        self.assertNotIn("clock-absent", dokime.run_check("stop")["flags"])
+        run("init", "--write=hooks")                       # hooks configured but never fired: still no clock
+        self.assertIn("clock-absent", dokime.run_check("all")["flags"])
+        os.remove(dokime.SETTINGS)
+        self.start()                                       # a clock with no repo hook (user-level hooks): not flagged
+        self.assertNotIn("clock-absent", dokime.run_check("all")["flags"])
+        shutil.rmtree(".dokime"); run("init", "--write=hooks")
+        self.start()
+        rep = dokime.run_check("all")
+        self.assertEqual((rep["hooks"], "clock-absent" in rep["flags"]), ("configured", False))
+        write(dokime.SETTINGS, '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "true # dokime"}]}]}}')
+        self.assertNotIn("clock-absent", dokime.run_check("all")["flags"])  # clock ticked: the config is not the test
+        shutil.rmtree(".dokime")
+        self.assertIn("clock-absent", dokime.run_check("all")["flags"])     # decorative hook, no clock: flagged
+        self.assertIn("hooks: configured", dokime.render(dokime.run_check("all")))
+
+    def test_shallow_history_is_named(self):
+        self.open_at("u", "2026-03-01T00:00:00+00:00")
+        clone = tempfile.mkdtemp()
+        try:
+            subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + os.getcwd(), clone], check=True)
+            os.chdir(clone)
+            rep = dokime.run_check("all")
+            self.assertEqual((rep["history"], rep["units"][0]["pin"]), ("shallow", "UNVERIFIABLE (shallow history)"))
+            self.assertNotIn("history-shallow", rep["flags"])
+            self.assertIn("history-shallow", dokime.run_check("stop")["flags"])
+        finally:
+            os.chdir(self.tmp)
+            shutil.rmtree(clone)
+        self.assertEqual(dokime.run_check("all")["history"], "full")
+
+    def test_commit_days_use_committer_date(self):
+        self.work_commit("late.txt", when="2026-09-14T01:00:00+08:00")   # 2026-09-13 in UTC
+        self.assertEqual(dokime.work_dates()[-1], "2026-09-14")
+
+    def test_condition_that_invokes_check_does_not_recurse(self):
+        cond = "run: python3 %s check --json | grep -q hooks" % dokime.__file__
+        dokime.save_unit({"name": "u", "opened_at": "2026-03-01T00:00:00+00:00", "status": "open", "ceiling_sessions": 1,
+                          "done_condition": cond, "done_condition_sha256": dokime.sha256_text(cond), "evidence": []})
+        self.assertEqual(dokime.run_condition(cond, timeout=30), "pass")  # inner check ran with conditions off
+        os.environ["DOKIME_NESTED"] = "1"
+        try:
+            self.assertEqual(dokime.run_condition("run: true"), "unverified")
+        finally:
+            del os.environ["DOKIME_NESTED"]
+
+    def test_init_dry_run_shows_every_piece(self):
+        out = run("init")[1]
+        self.assertIn("+++ units/.gitkeep (empty)", out)
 
     def test_line_budget(self):
         src = dokime.read(os.path.join(os.path.dirname(HERE), "dokime.py")).splitlines()
