@@ -69,12 +69,12 @@ def sha256_file(path):
 
 
 def run_condition(cond, timeout=120):
-    """Return 'pass' | 'fail' | 'unverified'. Only run: conditions execute."""
-    if not cond.startswith("run:"):
+    """Return 'pass' | 'fail' | 'unverified'. Only run: conditions execute, never nested."""
+    if not cond.startswith("run:") or os.environ.get("DOKIME_NESTED"):
         return "unverified"
     try:
-        p = subprocess.run(cond[4:].strip(), shell=True, timeout=timeout,
-                           capture_output=True, text=True)
+        p = subprocess.run(cond[4:].strip(), shell=True, timeout=timeout, capture_output=True,
+                           text=True, env=dict(os.environ, DOKIME_NESTED="1"))
     except subprocess.TimeoutExpired:
         return "fail"
     return "pass" if p.returncode == 0 else "fail"
@@ -159,6 +159,8 @@ def pin_status(d):
     if not added:
         return "UNVERIFIABLE (unit file not committed)"
     first = added.splitlines()[-1]
+    if git("rev-parse", "--is-shallow-repository") == "true" and git("rev-parse", "--verify", "--quiet", first + "^") is None:
+        return "UNVERIFIABLE (shallow history)"  # the adding commit is the graft point; its history is cut
     blob = git("show", "%s:%s" % (first, unit_path(d["name"])))
     try:
         orig = json.loads(blob or "")
@@ -272,14 +274,6 @@ def finish(a, status):
         "%s %s (condition %s%s)" % (status, a.name, result, ", FORCED" if a.force else "")
 
 
-def cmd_close(a):
-    return finish(a, "closed")
-
-
-def cmd_met(a):
-    return finish(a, "met")
-
-
 def cmd_list(a):
     units = all_units()
     lines = ["%-24s %-7s %3s  %-9s %2d ev  %s" % (
@@ -319,10 +313,15 @@ def clock():
 
 
 def work_dates():
-    """UTC dates of commits touching files outside the ledger, oldest first."""
+    """Commit dates (in the committer's own zone, like a handoff filename) outside the ledger."""
     log = git("log", "--reverse", "--format=%cI", "--", ".", ":(exclude)" + HANDOFFS,
               ":(exclude)" + UNITS, ":(exclude).dokime") or ""
-    return [utc_date(x) for x in log.splitlines()]
+    return [parse_ts(x).date().isoformat() for x in log.splitlines()]
+
+
+def hooks_configured():
+    cur = json.loads(read(SETTINGS)) if os.path.exists(SETTINGS) else {}
+    return any("dokime" in json.dumps(h) for h in (cur.get("hooks") or {}).values())
 
 
 def unit_open_on(units, name, date):
@@ -358,9 +357,15 @@ def check_unit(u, at, starts, hs, days):
 
 def run_check(at="all"):
     units, hs, days, starts = all_units(), handoffs(), work_dates(), clock()
-    rep = {"at": at, "intent": intent_status(), "units": [], "flags": []}
+    rep = {"at": at, "intent": intent_status(), "units": [], "flags": [],
+           "hooks": "configured" if hooks_configured() else "absent",
+           "history": "shallow" if git("rev-parse", "--is-shallow-repository") == "true" else "full"}
     if rep["intent"] != "present" and at != "stop":
         rep["flags"].append("intent-" + rep["intent"])
+    if at == "stop" and rep["history"] == "shallow" and units:
+        rep["flags"].append("history-shallow")
+    if at != "stop" and starts is None and any(u["status"] != "closed" for u in units):
+        rep["flags"].append("clock-absent")
     ever = (git("log", "--diff-filter=A", "--format=", "--name-only", "--", UNITS) or "").split()
     for path in sorted(set(ever)):
         if not os.path.exists(path):
@@ -388,15 +393,13 @@ def run_check(at="all"):
 
 
 def render(rep):
-    L = ["intent: " + rep["intent"]]
+    L = ["intent: %s  hooks: %s  history: %s" % (rep["intent"], rep["hooks"], rep["history"])]
     for r in rep["units"]:
         line = "unit %s: %s  condition %s  evidence %s  pin %s" % (
             r["name"], r["status"], r["condition"], r["evidence"], r["pin"])
         if "ceiling" in r:
             line += "  sessions %s/%d" % ("?" if r["sessions"] is None else r["sessions"], r["ceiling"])
-        if r.get("forced"):
-            line += "  FORCED(%s)" % r["forced"]
-        L.append(line + "".join("  " + f.upper() for f in r["flags"]))
+        L.append(line + ("  FORCED(%s)" % r["forced"] if r.get("forced") else "") + "".join("  " + f.upper() for f in r["flags"]))
     if "sessions" in rep:
         h, s = rep["handoffs"], rep["sessions"]
         L.append("handoffs: %d  last %s  unit %s" % (h["count"], h["last"] or "-",
@@ -420,9 +423,9 @@ def cmd_check(a):
 
 def status_line(rep):
     n, u, s = len(rep["flags"]), len(rep["units"]), rep["sessions"]["clock"]
-    return "dokime: %s | intent %s | %d unit%s | sessions %s" % (
+    return "dokime: %s | intent %s | hooks %s | %d unit%s | sessions %s" % (
         "ok" if not n else "%d flag%s: %s" % (n, "s"[n == 1:], " ".join(rep["flags"])),
-        rep["intent"], u, "s"[u == 1:], "unknown" if s is None else s)
+        rep["intent"], rep["hooks"], u, "s"[u == 1:], "unknown" if s is None else s)
 
 
 def cmd_status(a):
@@ -481,10 +484,8 @@ Open a unit before work (`dokime open <name> --condition "run: ..."`) and end ea
 Never edit intent.md or a unit's done_condition without asking.
 """ + ENDMARK + "\n"
 HANDOFF_TEMPLATE = "unit: <name>\n\n## Done\n\n## Next\n"
-QUESTIONS = (("Goals", "What must this repo achieve? (one per line, blank line ends)"),
-             ("Non-goals", "What will it deliberately not do?"),
-             ("Acceptance criteria", "What observable results mean done?"),
-             ("Invariants", "What must never change while working?"))
+QUESTIONS = (("Goals", "What must this repo achieve? (one per line, blank line ends)"), ("Non-goals", "What will it deliberately not do?"),
+             ("Acceptance criteria", "What observable results mean done?"), ("Invariants", "What must never change while working?"))
 PIECES = ("units", "handoffs", "hooks", "claude-md", "gitignore", "intent")
 
 
@@ -494,11 +495,10 @@ def dokime_cmd():
     here, top = os.path.abspath(__file__), os.getcwd()
     if here.startswith(top + os.sep):
         return 'python3 "$CLAUDE_PROJECT_DIR/%s"' % os.path.relpath(here, top)
-    return 'python3 "%s"' % here
+    return None  # an absolute path would only work on this machine
 
 
-def hook_config():
-    c = dokime_cmd()
+def hook_config(c):
     return {"SessionStart": [{"hooks": [{"type": "command", "command": c + " session-start"}]}],
             "Stop": [{"hooks": [{"type": "command", "command": c + " stop-hook"}]}]}
 
@@ -536,12 +536,15 @@ def planned_writes():
         cur = json.loads(read(SETTINGS)) if os.path.exists(SETTINGS) else {}
     except ValueError as ex:
         raise DokimeError("%s: invalid JSON (%s)" % (SETTINGS, ex))
-    if any("dokime" in json.dumps(h) for h in (cur.get("hooks") or {}).values()):
+    c = dokime_cmd()
+    if hooks_configured():
         plan["hooks"] = (SETTINGS, None, "present")
-    elif cur.get("hooks"):
-        plan["hooks"] = (SETTINGS, None, "MANUAL: existing hooks; add this yourself:\n" + json.dumps(hook_config(), indent=2))
+    elif cur.get("hooks") or c is None:
+        why = "existing hooks; add this yourself" if cur.get("hooks") else \
+            "dokime is neither on PATH nor inside this repo: pip install it, or vendor dokime.py (e.g. tools/dokime.py) and run init from that copy; then add"
+        plan["hooks"] = (SETTINGS, None, "MANUAL: %s:\n%s" % (why, json.dumps(hook_config(c or "dokime"), indent=2)))
     else:
-        cur["hooks"] = hook_config()
+        cur["hooks"] = hook_config(c)
         plan["hooks"] = (SETTINGS, json.dumps(cur, indent=2) + "\n", "missing")
     md = read(CLAUDE_MD) if os.path.exists(CLAUDE_MD) else ""
     plan["claude-md"] = (CLAUDE_MD, None if MARK in md else md.rstrip("\n") + ("\n\n" if md else "") + CLAUDE_LINES, "present" if MARK in md else "missing")
@@ -571,9 +574,9 @@ def cmd_init(a):
             report[piece], line = "written", "%s: written %s" % (piece, path)
         else:
             report[piece], line = note, "%s: %s" % (piece, note)
-            if new and new != "<interview>" and not want:
+            if new is not None and new != "<interview>" and not want:
                 old = read(path).splitlines() if os.path.exists(path) else []
-                line += "\n" + "\n".join(difflib.unified_diff(old, new.splitlines(), path, path, lineterm=""))
+                line += "\n" + ("\n".join(difflib.unified_diff(old, new.splitlines(), path, path, lineterm="")) or "+++ %s (empty)" % path)
         lines.append(line)
     if not want and any(v[1] for v in plan.values()):
         lines.append("nothing written; use --write=all or --write=" + ",".join(PIECES))
@@ -656,9 +659,9 @@ def build_parser():
     s.add_argument("name")
     s.add_argument("--condition", required=True, help="done condition; prefix run: to make it executable")
     s.add_argument("--ceiling", type=int, default=3, help="ceiling in sessions (default 3)")
-    for name, fn, help in (("close", cmd_close, "close a unit; refuses without valid evidence"),
-                           ("met", cmd_met, "mark a unit met but leave it unclosed")):
-        s = add(name, fn, help)
+    for name, st, help in (("close", "closed", "close a unit; refuses without valid evidence"),
+                           ("met", "met", "mark a unit met but leave it unclosed")):
+        s = add(name, lambda a, st=st: finish(a, st), help)
         s.add_argument("name")
         s.add_argument("--evidence", action="append", metavar="KIND:REF",
                        help="commit:<sha> | artifact:<path> | sha256:<path>:<hex>")
