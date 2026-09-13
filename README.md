@@ -36,18 +36,31 @@ pip install .            # gives you the `dokime` command
 ```
 dokime init                      # report what is missing; writes nothing
 dokime init --write=all          # scaffold everything (intent.md via interview)
-dokime open build --condition "run: python3 -m unittest -q" --ceiling 3
+dokime open build --condition "run: python3 -m unittest discover -s tests -q" --ceiling 3
 dokime check                     # status block; exit 1 on any flag
 dokime status                    # one line
-dokime close build --evidence commit:abc1234
+dokime close build --evidence commit:$(git rev-parse --short HEAD)
 dokime scan --condition "run: pytest -q"   # earliest recent commit where it passed
-dokime uninstall                 # remove hooks and the CLAUDE.md block; keep records
+dokime uninstall                 # remove hooks, the CLAUDE.md block and the .gitignore line
 ```
 
 Every command takes `--json`.
 
 A handoff is `handoffs/YYYY-MM-DD-<topic>.md`, written at the end of a session,
-with a line `unit: <name>`.
+with a line `unit: <name>`. Detection is day-granular: two sessions on one day
+are one boundary.
+
+`open` refuses a `run:` condition that already passes; a unit needs a condition
+that is false now. `met` is `close` without `closed_at`: the condition and
+evidence are verified and recorded, the unit waits for a human to close it.
+Commit the unit file after `open`, or the pin reads `UNVERIFIABLE`. To correct
+a pinned condition, close the unit with `--force <reason>` and open a new one;
+the reason is printed by `check` as `FORCED(<reason>)`.
+
+The intent interview needs a terminal. Without one, set `DOKIME_INTERVIEW` to a
+file holding four blank-line-terminated blocks (goals, non-goals, acceptance
+criteria, invariants) followed by a line `y`; the draft is printed before it is
+written. The other pieces are written regardless.
 
 ## What check prints
 
@@ -73,8 +86,14 @@ day with no session.
 - `SessionStart` runs `dokime session-start`: ticks the clock and prints the
   full check into the agent's context. It cannot block.
 - `Stop` runs `dokime stop-hook`: ledger-integrity rules only (pin, evidence),
-  never `run:` conditions. By default it prints and exits 0. With `--strict` it
-  exits 2, which sends the flags back to the model.
+  never `run:` conditions. By default it is silent when clean, prints a
+  `systemMessage` when flagged, and exits 0. With `--strict` it exits 2, which
+  sends the flags back to the model.
+
+**Unit files are code.** A `run:` condition is executed with the shell by
+`check`, `session-start` and `open`, for every unit that is not closed. Review
+`units/*.json` in pull requests as you would a script. Each run is limited to
+120 seconds.
 
 If `settings.json` already has hooks, init prints the snippet and does not merge.
 
@@ -83,12 +102,16 @@ If `settings.json` already has hooks, init prints the snippet and does not merge
 dokime guarantees:
 
 - A unit's done condition is pinned at open. If it later differs, `check` says
-  `CHANGED` and names the commit.
+  `pin CHANGED` (with the commit it was pinned in, once the unit file is
+  committed) and `close` refuses without `--force`.
 - A unit cannot be closed without evidence that resolves: a SHA reachable from
   HEAD, dated after open, touching a non-empty file outside the ledger; a
   tracked path; or a `path:sha256` that matches. `--force <reason>` is recorded.
 - A unit with a `run:` condition cannot be closed while it exits non-zero.
 - `unverified` never counts as `pass`.
+- A closed unit is not re-verified. Its evidence was checked at close; a later
+  rebase does not reopen it.
+- A unit file that was ever committed and is now missing prints `unit-missing`.
 
 dokime does not:
 

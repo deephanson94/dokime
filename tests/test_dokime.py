@@ -82,10 +82,12 @@ class SchemaTest(RepoCase):
         self.assertIn("bad status: weird", dokime.validate_unit(d))
 
     def test_open_writes_pinned_json(self):
-        code, out, _ = run("open", "u", "--condition", "run: true", "--json")
+        code, _, err = run("open", "u", "--condition", "run: true")
+        self.assertEqual((code, "already passes" in err), (1, True))
+        code, out, _ = run("open", "u", "--condition", "run: test -f ok", "--json")
         self.assertEqual(code, 0)
         d = json.loads(out)["unit"]
-        self.assertEqual(d["done_condition_sha256"], dokime.sha256_text("run: true"))
+        self.assertEqual(d["done_condition_sha256"], dokime.sha256_text("run: test -f ok"))
         self.assertEqual(dokime.load_unit("u")["status"], "open")
         self.assertEqual(run("open", "u", "--condition", "x")[0], 1)
         self.assertEqual(run("open", "bad name", "--condition", "x")[0], 1)
@@ -93,7 +95,7 @@ class SchemaTest(RepoCase):
 
 class PinTest(RepoCase):
     def test_pin_states(self):
-        run("open", "u", "--condition", "run: true")
+        run("open", "u", "--condition", "run: test -f ok")
         d = dokime.load_unit("u")
         self.assertTrue(dokime.pin_status(d).startswith("UNVERIFIABLE"))
         git("add", "-A"); git("commit", "-qm", "open u")
@@ -121,8 +123,10 @@ class EvidenceTest(RepoCase):
         self.assertIn("symbolic", self.verify("commit", "HEAD"))
         self.assertIn("before unit opened", self.verify("commit", subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD~1"], text=True).strip()))
+        self.assertIn("before unit opened", self.verify("commit", self.head()))  # same second as open
+        write("units/.gitkeep", ""); git("add", "-A"); git("commit", "-qm", "ledger", when="2026-06-01T00:00:00+00:00")
         self.assertIn("outside the ledger", self.verify("commit", self.head()))
-        git("commit", "-q", "--allow-empty", "-m", "empty", when="2026-06-01T00:00:00+00:00")
+        git("commit", "-q", "--allow-empty", "-m", "empty", when="2026-06-01T00:00:01+00:00")
         self.assertIn("outside the ledger", self.verify("commit", self.head()))
         good = self.work_commit()
         self.assertIsNone(self.verify("commit", good))
@@ -139,6 +143,10 @@ class EvidenceTest(RepoCase):
         self.assertIn("path:sha256", self.verify("sha256", "z.txt"))
         self.assertIn("does not match", self.verify("sha256", "z.txt:" + "0" * 64))
         self.assertIsNone(self.verify("sha256", "z.txt:" + dokime.sha256_file("z.txt")))
+        write("y.txt", "y\n")
+        self.assertIn("not tracked", self.verify("sha256", "y.txt:" + dokime.sha256_file("y.txt")))
+        self.assertIn("ledger files", self.verify("artifact", "units/u.json"))
+        self.assertIn("ledger files", self.verify("sha256", "./handoffs/x.md:" + "0" * 64))
 
     def test_close_refuses_then_closes(self):
         self.assertEqual(run("close", "u")[0], 1)
@@ -260,18 +268,15 @@ class ReplayTest(unittest.TestCase):
                 write(os.path.join(tmp, "h", "2026-09-0%d-x.md" % i), ("unit: %s\n" % u if u else "") + "n\n")
             os.makedirs(os.path.join(tmp, "units"))
             write(os.path.join(tmp, "units", "feat.json"), json.dumps(
-                {"name": "feat", "done_condition": "run: true", "ceiling_sessions": 1}))
+                {"name": "feat", "done_condition": "run: test -f work-1.txt", "ceiling_sessions": 1}))
             s = fixture.from_handoffs(os.path.join(tmp, "h"))
             self.assertEqual([x["unit"] for x in s], ["feat", None])
-            self.assertEqual(s[0]["open"][0]["condition"], "run: true")
+            self.assertEqual(s[0]["open"][0]["condition"], "run: test -f work-1.txt")
             f = [r["flags"] for r in fixture.replay(os.path.join(tmp, "out"), s)]
             self.assertIn("met-but-open(feat)", f[1])
         finally:
             shutil.rmtree(tmp)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class InitTest(RepoCase):
@@ -285,7 +290,8 @@ class InitTest(RepoCase):
         self.assertIn("nothing written", out)
         self.assertIn("+++ .claude/settings.json", out)
         self.assertFalse(os.path.exists(".claude"))
-        self.assertEqual(run("init", "--write=intent")[0], 1)  # no terminal, no answers
+        code, out, _ = run("init", "--write=intent")  # no terminal, no answers
+        self.assertEqual((code, "intent: not written" in out, os.path.exists("intent.md")), (0, True, False))
         write("answers.txt", "g1\ng2\n\nn1\n\na1\n\ni1\n\ny\n")
         os.environ["DOKIME_INTERVIEW"] = "answers.txt"
         try:
@@ -309,7 +315,7 @@ class InitTest(RepoCase):
         write("answers.txt", "g\n\nn\n\na\n\ni\n\nno\n")
         os.environ["DOKIME_INTERVIEW"] = "answers.txt"
         try:
-            self.assertEqual(run("init", "--write=intent")[0], 1)
+            self.assertIn("intent: not written", run("init", "--write=intent")[1])
         finally:
             del os.environ["DOKIME_INTERVIEW"]
         self.assertFalse(os.path.exists("intent.md"))
@@ -335,8 +341,12 @@ class InitTest(RepoCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(dokime.read(dokime.SETTINGS)), {"permissions": {"allow": ["Bash"]}})
         self.assertEqual(dokime.read("CLAUDE.md"), "# mine\n")
-        self.assertFalse(os.path.exists(".dokime"))
+        self.assertTrue(os.path.exists(".dokime"))
+        self.assertNotIn(".dokime/", dokime.read(".gitignore"))
         self.assertTrue(os.path.isdir("units") and os.path.isdir("handoffs") and os.path.exists("intent.md"))
+        write(dokime.SETTINGS, '{"a": [1,2]}')
+        run("uninstall")
+        self.assertEqual(dokime.read(dokime.SETTINGS), '{"a": [1,2]}')
         run("init", "--write=claude-md")
         self.assertTrue(dokime.read("CLAUDE.md").startswith("# mine\n\n" + dokime.MARK))
 
@@ -353,3 +363,140 @@ class ScanTest(RepoCase):
         self.assertIn("earliest passing: none", out)
         self.assertEqual(run("scan", "--condition", "prose")[0], 1)
         self.assertEqual(subprocess.check_output(["git", "worktree", "list"], text=True).count("\n"), 1)
+
+
+class RegressionTest(RepoCase):
+    """Findings from the user-test panel."""
+
+    def open_at(self, name, when, cond="x", ceiling=3):
+        os.environ["DOKIME_NOW"] = when
+        self.assertEqual(run("open", name, "--condition", cond, "--ceiling", str(ceiling))[0], 0)
+        git("add", "-A"); git("commit", "-qm", "open " + name, when=when)
+        return dokime.load_unit(name)["opened_at"]
+
+    def test_evidence_date_uses_offsets(self):
+        opened = self.open_at("u", "2026-09-13T10:00:00+00:00")
+        after = self.work_commit("a.txt", when="2026-09-13T05:00:00-07:00")   # 12:00Z, after open
+        self.assertIsNone(dokime.verify_evidence({"kind": "commit", "ref": after}, opened))
+        before = self.work_commit("b.txt", when="2026-09-13T18:00:00+09:00")  # 09:00Z, before open
+        self.assertIn("before unit opened", dokime.verify_evidence({"kind": "commit", "ref": before}, opened))
+
+    def test_naive_and_zulu_timestamps_are_utc(self):
+        os.environ["TZ"] = "America/New_York"
+        try:
+            self.assertEqual(dokime.utc_date("2026-09-13T22:00:00"), "2026-09-13")
+            self.assertEqual(dokime.utc_date("2026-09-13T22:00:00Z"), "2026-09-13")
+        finally:
+            del os.environ["TZ"]
+
+    def test_close_checks_pin_and_closed_units_are_not_reverified(self):
+        opened = self.open_at("u", "2026-03-01T00:00:00+00:00")
+        good = self.work_commit()
+        d = dokime.load_unit("u"); d["done_condition"] = "y"
+        d["done_condition_sha256"] = dokime.sha256_text("y"); dokime.save_unit(d)
+        code, _, err = run("close", "u", "--evidence", "commit:" + good)
+        self.assertEqual((code, "pin CHANGED" in err), (1, True))
+        run("close", "u", "--evidence", "commit:" + good, "--force", "typo fix")
+        git("add", "-A"); git("commit", "-qm", "close")
+        git("rebase", "-q", "--force-rebase", "HEAD~2", when="2026-07-01T00:00:00+00:00")  # rewrites `good`
+        self.assertIn("not reachable", dokime.verify_evidence({"kind": "commit", "ref": good}, opened))
+        rep = dokime.run_check("all")
+        u = rep["units"][0]
+        self.assertEqual((u["evidence"], u["condition"], u["forced"]), ("valid", "unverified", "typo fix"))
+        self.assertIn("FORCED(typo fix)", dokime.render(rep))
+        self.assertNotIn("evidence-invalid(u)", rep["flags"])
+
+    def test_closed_units_do_not_run_conditions(self):
+        self.open_at("u", "2026-03-01T00:00:00+00:00", cond="run: touch ran-%d && false" % os.getpid())
+        good = self.work_commit()
+        run("close", "u", "--evidence", "commit:" + good, "--force", "x")
+        os.remove("ran-%d" % os.getpid()) if os.path.exists("ran-%d" % os.getpid()) else None
+        dokime.run_check("all")
+        self.assertFalse(os.path.exists("ran-%d" % os.getpid()))
+
+    def test_handoff_on_close_day_is_valid(self):
+        self.open_at("u", "2026-03-01T00:00:00+00:00")
+        good = self.work_commit(when="2026-03-02T00:00:00+00:00")
+        os.environ["DOKIME_NOW"] = "2026-03-02T10:00:00+00:00"
+        run("close", "u", "--evidence", "commit:" + good)
+        write("handoffs/2026-03-02-done.md", "unit: u\n")
+        rep = dokime.run_check("all")
+        self.assertTrue(rep["handoffs"]["unit_valid"])
+        self.assertEqual(rep["flags"], [])
+
+    def test_second_handoff_same_day_cannot_hide_work(self):
+        write("handoffs/2026-01-01-a.md", "unit: nope\n")
+        write("handoffs/2026-01-01-b.md", "unit: nope\n")
+        self.assertTrue(any(f.startswith("work-without-unit(2026-01-01-b") for f in dokime.run_check("all")["flags"]))
+        write("handoffs/2999-01-01-z.md", "unit: nope\n")
+        self.assertIn("handoff-future(2999-01-01-z.md)", dokime.run_check("all")["flags"])
+
+    def test_session_count_when_unit_predates_clock(self):
+        opened = self.open_at("u", "2026-03-01T00:00:00+00:00")
+        for i in (1, 2, 3):
+            os.environ["DOKIME_NOW"] = "2026-03-0%dT09:00:00+00:00" % (i + 1)
+            run("session-start")
+        rep = dokime.run_check("all")
+        self.assertEqual((rep["units"][0]["sessions"], rep["sessions"]["clock"]), (3, 3))
+        self.assertNotIn("over-ceiling(u)", rep["flags"])
+        os.environ["DOKIME_NOW"] = "2026-03-05T09:00:00+00:00"
+        run("session-start")
+        self.assertIn("over-ceiling(u)", dokime.run_check("all")["flags"])
+
+    def test_divergence_ignores_history_before_the_clock(self):
+        for d in ("2026-01-02", "2026-01-03", "2026-01-04"):
+            self.work_commit(d + ".txt", when=d + "T00:00:00+00:00")
+        os.environ["DOKIME_NOW"] = "2026-02-01T09:00:00+00:00"
+        run("session-start")
+        self.assertFalse(dokime.run_check("all")["sessions"]["divergent"])
+
+    def test_deleted_unit_is_flagged_and_names_must_match(self):
+        self.open_at("u", "2026-03-01T00:00:00+00:00")
+        os.remove("units/u.json")
+        self.assertIn("unit-missing(u)", dokime.run_check("all")["flags"])
+        write("units/alias.json", json.dumps({"name": "u", "opened_at": "2026-03-01T00:00:00+00:00", "status": "open",
+                                             "ceiling_sessions": 1, "done_condition": "x",
+                                             "done_condition_sha256": dokime.sha256_text("x"), "evidence": []}))
+        self.assertEqual(run("list")[0], 1)
+
+    def test_prose_condition_never_met(self):
+        self.open_at("u", "2026-03-01T00:00:00+00:00")
+        r = dokime.run_check("all")["units"][0]
+        self.assertEqual(r["condition"], "unverified")
+        self.assertNotIn("met-but-open", r["flags"])
+
+    def test_no_tracebacks(self):
+        write(dokime.SETTINGS, "{not json")
+        code, _, err = run("init")
+        self.assertEqual((code, "invalid JSON" in err), (1, True))
+        os.remove(dokime.SETTINGS)
+        write("units/dir.json/x", "")
+        self.assertEqual(run("list")[0], 1)
+        shutil.rmtree("units")
+        write("handoffs/2026-01-01-bin.md", "unit: u\n")
+        with open("handoffs/2026-01-01-bin.md", "ab") as f:
+            f.write(b"\xff\xfe")
+        self.assertEqual(run("check", "--warn-only")[0], 0)
+        os.remove("intent.md")
+        os.environ["DOKIME_INTERVIEW"] = "missing.txt"
+        try:
+            self.assertIn("intent: not written", run("init", "--write=intent")[1])
+        finally:
+            del os.environ["DOKIME_INTERVIEW"]
+        sys.stdin = io.StringIO('"x"')
+        self.assertEqual(run("stop-hook")[0], 0)
+        sys.stdin = sys.__stdin__
+
+    def test_every_command_has_json(self):
+        for argv in (("list",), ("status",), ("session-start",), ("init",), ("uninstall",), ("check",)):
+            code, out, _ = run(*argv, "--json")
+            self.assertEqual(code, 0, argv)
+            json.loads(out)
+
+    def test_line_budget(self):
+        src = dokime.read(os.path.join(os.path.dirname(HERE), "dokime.py")).splitlines()
+        self.assertLessEqual(sum(1 for ln in src if ln.strip() and not ln.strip().startswith("#")), 600)
+
+
+if __name__ == "__main__":
+    unittest.main()

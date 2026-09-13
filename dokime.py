@@ -9,8 +9,8 @@ UNITS, HANDOFFS, INTENT = "units", "handoffs", "intent.md"
 CLOCK = os.path.join(".dokime", "sessions.log")
 STATUSES = ("open", "met", "closed")
 KINDS = ("commit", "artifact", "sha256")
-SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 LEDGER_DIRS = (HANDOFFS + "/", UNITS + "/", ".dokime/")
 
 
@@ -25,8 +25,13 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
+def parse_ts(iso):
+    t = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+
+
 def utc_date(iso):
-    return datetime.datetime.fromisoformat(iso).astimezone(datetime.timezone.utc).date().isoformat()
+    return parse_ts(iso).astimezone(datetime.timezone.utc).date().isoformat()
 
 
 def git(*args, check=False):
@@ -47,7 +52,7 @@ def root():
 
 
 def read(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         return f.read()
 
 
@@ -63,7 +68,7 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def run_condition(cond, timeout=600):
+def run_condition(cond, timeout=120):
     """Return 'pass' | 'fail' | 'unverified'. Only run: conditions execute."""
     if not cond.startswith("run:"):
         return "unverified"
@@ -91,15 +96,19 @@ def validate_unit(d):
             e.append("wrong type: %s (want %s)" % (k, t.__name__))
     if e:
         return e
-    if not NAME_RE.match(d["name"]):
-        e.append("bad name: " + d["name"])
+    if not NAME_RE.fullmatch(d["name"]):
+        e.append("bad name %r (letters, digits, . _ -; no spaces or slashes)" % d["name"])
     if d["status"] not in STATUSES:
         e.append("bad status: " + d["status"])
     if d["ceiling_sessions"] < 1:
         e.append("ceiling_sessions must be >= 1")
     if not d["done_condition"].strip():
         e.append("done_condition is empty")
-    if not re.match(r"^[0-9a-f]{64}$", d["done_condition_sha256"]):
+    try:
+        parse_ts(d["opened_at"])
+    except ValueError:
+        e.append("opened_at is not an ISO-8601 timestamp")
+    if not re.fullmatch(r"[0-9a-f]{64}", d["done_condition_sha256"]):
         e.append("done_condition_sha256 is not a sha256 hex digest")
     for i, ev in enumerate(d["evidence"]):
         if not isinstance(ev, dict) or ev.get("kind") not in KINDS or not isinstance(ev.get("ref"), str):
@@ -121,6 +130,8 @@ def load_unit(name):
     except ValueError as ex:
         raise DokimeError("%s: invalid JSON (%s)" % (p, ex))
     errs = validate_unit(d)
+    if not errs and d["name"] != name:
+        errs.append("file name does not match unit name %r" % d["name"])
     if errs:
         raise DokimeError("%s: %s" % (p, "; ".join(errs)))
     return d
@@ -160,15 +171,14 @@ def pin_status(d):
 
 # --------------------------------------------------------------- evidence
 def verify_commit(ref, opened_at):
-    if not SHA_RE.match(ref):
-        return "not a SHA (symbolic refs are refused)"
+    if not SHA_RE.fullmatch(ref):
+        return "not a SHA (symbolic refs are refused; use git rev-parse HEAD)"
     full = git("rev-parse", "--verify", "--quiet", ref + "^{commit}")
     if not full:
         return "no such commit"
     if git("merge-base", "--is-ancestor", full, "HEAD") is None:
         return "not reachable from HEAD"
-    when = git("show", "-s", "--format=%cI", full) or ""
-    if when[:19] < opened_at[:19]:
+    if int(git("show", "-s", "--format=%ct", full) or 0) <= parse_ts(opened_at).timestamp():
         return "committed before unit opened"
     files = (git("show", "--name-only", "--format=", full) or "").splitlines()
     for f in files:
@@ -185,18 +195,20 @@ def verify_evidence(ev, opened_at):
     kind, ref = ev["kind"], ev["ref"]
     if kind == "commit":
         return verify_commit(ref, opened_at)
-    if kind == "artifact":
-        if not os.path.exists(ref):
-            return "path does not exist"
-        if git("ls-files", "--error-unmatch", ref) is None:
-            return "path is not tracked by git"
-        return None
-    path, _, digest = ref.rpartition(":")
-    if not path or not re.match(r"^[0-9a-f]{64}$", digest):
-        return "expected path:sha256"
+    path, digest = ref, None
+    if kind == "sha256":
+        path, _, digest = ref.rpartition(":")
+        if not path or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return "expected path:sha256"
+    if os.path.normpath(path).startswith(tuple(d.rstrip("/") for d in LEDGER_DIRS)):
+        return "ledger files are not evidence"
     if not os.path.isfile(path):
         return "path does not exist"
-    return None if sha256_file(path) == digest else "content hash does not match"
+    if git("ls-files", "--error-unmatch", path) is None:
+        return "path is not tracked by git"
+    if digest and sha256_file(path) != digest:
+        return "content hash does not match"
+    return None
 
 
 def parse_evidence(items):
@@ -211,8 +223,8 @@ def parse_evidence(items):
 
 # --------------------------------------------------------------- commands
 def cmd_open(a):
-    if not NAME_RE.match(a.name):
-        raise DokimeError("bad unit name: " + a.name)
+    if not NAME_RE.fullmatch(a.name):
+        raise DokimeError("bad unit name %r (letters, digits, . _ -; no spaces or slashes)" % a.name)
     if os.path.exists(unit_path(a.name)):
         raise DokimeError("unit already exists: " + a.name)
     cond = a.condition.strip()
@@ -223,6 +235,8 @@ def cmd_open(a):
     errs = validate_unit(d)
     if errs:
         raise DokimeError("; ".join(errs))
+    if run_condition(cond) == "pass":
+        raise DokimeError("done_condition already passes; a unit needs a condition that is false now")
     save_unit(d)
     warn = [] if cond.startswith("run:") else ["done_condition is prose: it will stay unverified"]
     return {"unit": d, "warnings": warn}, "opened %s (pin %s)%s" % (
@@ -244,6 +258,8 @@ def finish(a, status):
     result = run_condition(d["done_condition"])
     if result == "fail":
         problems.append("done_condition failed: " + d["done_condition"])
+    if pin_status(d).startswith("CHANGED"):
+        problems.append("done_condition pin " + pin_status(d))
     if problems and not a.force:
         raise DokimeError("refusing to set %s:\n  " % status + "\n  ".join(problems))
     d.update(status=status, evidence=evidence)
@@ -311,15 +327,17 @@ def work_dates():
 
 def unit_open_on(units, name, date):
     u = next((u for u in units if u["name"] == name), None)
-    return bool(u) and utc_date(u["opened_at"]) <= date and (u["status"] != "closed" or (u.get("closed_at") or "9") [:10] > date)
+    return bool(u) and utc_date(u["opened_at"]) <= date and (u["status"] != "closed" or (u.get("closed_at") or "9")[:10] >= date)
 
 
 def check_unit(u, at, starts, hs, days):
     r = {"name": u["name"], "status": u["status"], "flags": []}
-    r["condition"] = run_condition(u["done_condition"]) if at != "stop" else "unverified"
-    bad = [ev for ev in u["evidence"] if verify_evidence(ev, u["opened_at"])]
+    live = u["status"] != "closed"
+    r["condition"] = run_condition(u["done_condition"]) if live and at != "stop" else "unverified"
+    bad = [ev for ev in u["evidence"] if live and verify_evidence(ev, u["opened_at"])]
     r["evidence"] = "valid" if not bad else "invalid"
     r["pin"] = pin_status(u)
+    r["forced"] = u.get("force_reason")
     if r["pin"].startswith("CHANGED"):
         r["flags"].append("pin-changed")
     if bad:
@@ -328,7 +346,7 @@ def check_unit(u, at, starts, hs, days):
         r["flags"].append("met-but-open")
     if u["status"] != "closed" and at != "stop":
         opened = u["opened_at"]
-        r["sessions"] = None if starts is None else 1 + sum(1 for t in starts if t > opened)
+        r["sessions"] = None if starts is None else max(1, sum(1 for t in starts if t > opened) + any(t <= opened for t in starts))
         r["handoffs"] = sum(1 for h in hs if h[0] >= utc_date(opened))
         r["commit_days"] = len(set(d for d in days if d >= utc_date(opened)))
         r["ceiling"] = u["ceiling_sessions"]
@@ -342,19 +360,26 @@ def run_check(at="all"):
     rep = {"at": at, "intent": intent_status(), "units": [], "flags": []}
     if rep["intent"] != "present" and at != "stop":
         rep["flags"].append("intent-" + rep["intent"])
+    ever = (git("log", "--diff-filter=A", "--format=", "--name-only", "--", UNITS) or "").split()
+    for path in sorted(set(ever)):
+        if not os.path.exists(path):
+            rep["flags"].append("unit-missing(%s)" % path[len(UNITS) + 1:-5])
     for u in units:
         r = check_unit(u, at, starts, hs, days)
         rep["units"].append(r)
         rep["flags"] += ["%s(%s)" % (f, u["name"]) for f in r["flags"]]
     if at != "stop":
         last = hs[-1] if hs else None
-        prev = hs[-2][0] if len(hs) > 1 else ""
+        prev = max((h[0] for h in hs if last and h[0] < last[0]), default="")
         rep["handoffs"] = {"count": len(hs), "last": last and last[1], "unit": last and last[2],
                            "unit_valid": bool(last and last[2] and unit_open_on(units, last[2], last[0]))}
+        since = utc_date(starts[0]) if starts else ""
+        n_days, n_hs = len(set(d for d in days if d >= since)), sum(1 for h in hs if h[0] >= since)
         rep["sessions"] = {"clock": None if starts is None else len(starts), "handoffs": len(hs),
-                           "commit_days": len(set(days)), "divergent": False}
-        if starts is not None and (len(hs) < len(starts) - 1 or len(set(days)) > len(starts)):
-            rep["sessions"]["divergent"] = True
+                           "commit_days": len(set(days)),
+                           "divergent": bool(starts) and (n_hs < len(starts) - 1 or n_days > len(starts))}
+        if last and last[0] > utc_date(now()):
+            rep["flags"].append("handoff-future(%s)" % last[1])
         if last and not rep["handoffs"]["unit_valid"] and any(d > prev for d in days):
             rep["flags"].append("work-without-unit(%s)" % last[1])
     rep["ok"] = not rep["flags"]
@@ -368,6 +393,8 @@ def render(rep):
             r["name"], r["status"], r["condition"], r["evidence"], r["pin"])
         if "ceiling" in r:
             line += "  sessions %s/%d" % ("?" if r["sessions"] is None else r["sessions"], r["ceiling"])
+        if r.get("forced"):
+            line += "  FORCED(%s)" % r["forced"]
         L.append(line + "".join("  " + f.upper() for f in r["flags"]))
     if "sessions" in rep:
         h, s = rep["handoffs"], rep["sessions"]
@@ -412,7 +439,8 @@ def cmd_session_start(a):
 def cmd_stop_hook(a):
     """Stop hook: ledger-integrity rules only; exit 2 with stderr only under --strict."""
     try:
-        if json.load(sys.stdin).get("stop_hook_active"):
+        payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
+        if isinstance(payload, dict) and payload.get("stop_hook_active"):
             return {"skipped": True}, ""
     except (ValueError, OSError):
         pass
@@ -443,7 +471,7 @@ QUESTIONS = (("Goals", "What must this repo achieve? (one per line, blank line e
              ("Non-goals", "What will it deliberately not do?"),
              ("Acceptance criteria", "What observable results mean done?"),
              ("Invariants", "What must never change while working?"))
-PIECES = ("intent", "units", "handoffs", "hooks", "claude-md", "gitignore")
+PIECES = ("units", "handoffs", "hooks", "claude-md", "gitignore", "intent")
 
 
 def dokime_cmd():
@@ -464,7 +492,8 @@ def hook_config():
 
 def interview():
     if not sys.stdin.isatty() and os.environ.get("DOKIME_INTERVIEW") is None:
-        raise DokimeError("intent.md interview needs a terminal (or DOKIME_INTERVIEW=<file> answers)")
+        raise DokimeError("interview needs a terminal, or DOKIME_INTERVIEW=<answers file>: "
+                          "four blank-line-terminated blocks, then y")
     src = open(os.environ["DOKIME_INTERVIEW"]) if os.environ.get("DOKIME_INTERVIEW") else sys.stdin
     out = ["# intent", ""]
     for title, q in QUESTIONS:
@@ -490,7 +519,10 @@ def planned_writes():
     plan["intent"] = (INTENT, None if st == "present" else "<interview>", st)
     for piece, d, fn, body in (("units", UNITS, ".gitkeep", ""), ("handoffs", HANDOFFS, "TEMPLATE.md", HANDOFF_TEMPLATE)):
         plan[piece] = (os.path.join(d, fn), None if os.path.isdir(d) else body, "present" if os.path.isdir(d) else "missing")
-    cur = json.loads(read(SETTINGS)) if os.path.exists(SETTINGS) else {}
+    try:
+        cur = json.loads(read(SETTINGS)) if os.path.exists(SETTINGS) else {}
+    except ValueError as ex:
+        raise DokimeError("%s: invalid JSON (%s)" % (SETTINGS, ex))
     if any("dokime" in json.dumps(h) for h in (cur.get("hooks") or {}).values()):
         plan["hooks"] = (SETTINGS, None, "present")
     elif cur.get("hooks"):
@@ -514,8 +546,12 @@ def cmd_init(a):
     for piece in PIECES:
         path, new, note = plan[piece]
         if piece in want and new is not None:
-            if new == "<interview>":
-                new = interview()
+            try:
+                new = interview() if new == "<interview>" else new
+            except (DokimeError, OSError) as ex:
+                report[piece], line = "not written", "%s: not written (%s)" % (piece, ex)
+                lines.append(line)
+                continue
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "w") as f:
                 f.write(new)
@@ -526,9 +562,9 @@ def cmd_init(a):
                 old = read(path).splitlines() if os.path.exists(path) else []
                 line += "\n" + "\n".join(difflib.unified_diff(old, new.splitlines(), path, path, lineterm=""))
         lines.append(line)
-    if not want:
+    if not want and any(v[1] for v in plan.values()):
         lines.append("nothing written; use --write=all or --write=" + ",".join(PIECES))
-    return {"pieces": report, "written": bool(want)}, "\n".join(lines)
+    return {"pieces": report, "written": bool(want), "report": "\n".join(lines)}, "\n".join(lines)
 
 
 def cmd_uninstall(a):
@@ -543,8 +579,9 @@ def cmd_uninstall(a):
         cur["hooks"] = {k: v for k, v in (cur.get("hooks") or {}).items() if v}
         if not cur["hooks"]:
             del cur["hooks"]
-        with open(SETTINGS, "w") as f:
-            f.write(json.dumps(cur, indent=2) + "\n")
+        if removed:
+            with open(SETTINGS, "w") as f:
+                f.write(json.dumps(cur, indent=2) + "\n")
     if os.path.exists(CLAUDE_MD) and MARK in read(CLAUDE_MD):
         md = re.sub(r"\n*" + re.escape(MARK) + r".*?" + re.escape(ENDMARK) + r"\n?", "\n", read(CLAUDE_MD), flags=re.S).strip("\n")
         if md:
@@ -553,10 +590,11 @@ def cmd_uninstall(a):
         else:
             os.remove(CLAUDE_MD)
         removed.append("CLAUDE.md block")
-    if os.path.isdir(".dokime"):
-        shutil.rmtree(".dokime")
-        removed.append(".dokime/")
-    return {"removed": removed}, "removed: " + (", ".join(removed) or "nothing") + "\nkept: intent.md, units/, handoffs/ (records; delete by hand)"
+    if os.path.exists(GITIGNORE) and ".dokime/" in read(GITIGNORE).splitlines():
+        with open(GITIGNORE, "w") as f:
+            f.write("".join(ln + "\n" for ln in read(GITIGNORE).splitlines() if ln != ".dokime/"))
+        removed.append(".gitignore line")
+    return {"removed": removed}, "removed: " + (", ".join(removed) or "nothing") + "\nkept: intent.md, units/, handoffs/, .dokime/ (records; delete by hand)"
 
 
 def cmd_scan(a):
@@ -570,8 +608,8 @@ def cmd_scan(a):
             wt = os.path.join(tmp, sha[:10])
             git("worktree", "add", "--detach", "-q", wt, sha, check=True)
             cwd = os.getcwd()
-            os.chdir(wt)
             try:
+                os.chdir(wt)
                 results.append((sha, run_condition(a.condition, timeout=a.timeout)))
             finally:
                 os.chdir(cwd)
@@ -580,6 +618,7 @@ def cmd_scan(a):
                 break
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        git("worktree", "prune")
     passing = [s for s, r in results if r == "pass"]
     if not passing:
         return {"earliest_pass": None, "checked": len(results)}, "HEAD: %s  earliest passing: none in %d commit(s)" % (results[0][1] if results else "no commits", len(results))
@@ -614,7 +653,7 @@ def build_parser():
         s.add_argument("--force", metavar="REASON", help="record REASON and override verification failures")
     add("list", cmd_list, "list units")
     s = add("check", cmd_check, "print the status block; exit 1 on any flag")
-    s.add_argument("--at", choices=("all", "start", "stop"), default="all",
+    s.add_argument("--at", choices=("all", "stop"), default="all",
                    help="stop = ledger integrity only (no run: conditions, no session rules)")
     s.add_argument("--warn-only", action="store_true", help="exit 0 even when flagged")
     add("status", cmd_status, "one-line status")
@@ -640,7 +679,7 @@ def main(argv=None):
         print(json.dumps(ex.rep, indent=2, sort_keys=True) if a.json else str(ex),
               file=sys.stderr if ex.code == 2 else sys.stdout)
         return ex.code
-    except DokimeError as ex:
+    except (DokimeError, OSError, ValueError) as ex:
         if a.json:
             print(json.dumps({"error": str(ex)}))
         else:
