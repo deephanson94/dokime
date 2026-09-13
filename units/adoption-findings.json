@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-13T23:28:45+00:00",
+  "closed_by": "deephanson94",
   "done_condition": "run: python3 dokime.py check --json | grep -q '\"hooks\"'",
   "done_condition_sha256": "19703a23d215599010d9ffc695ca8940b211e1a4930e354ad4368bf7557b882b",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "d27ba42"
+    }
+  ],
   "name": "adoption-findings",
   "opened_at": "2026-09-13T23:20:18+00:00",
-  "status": "open"
+  "status": "closed"
 }
