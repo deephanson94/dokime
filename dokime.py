@@ -20,7 +20,13 @@ class DokimeError(Exception):
 
 # ---------------------------------------------------------------- helpers
 def now():
+    if os.environ.get("DOKIME_NOW"):
+        return os.environ["DOKIME_NOW"]
     return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def utc_date(iso):
+    return datetime.datetime.fromisoformat(iso).astimezone(datetime.timezone.utc).date().isoformat()
 
 
 def git(*args, check=False):
@@ -263,6 +269,163 @@ def cmd_list(a):
     return {"units": units}, "\n".join(lines) if lines else "no units"
 
 
+# ------------------------------------------------------------------ check
+HEADINGS = ("## Goals", "## Non-goals", "## Acceptance criteria", "## Invariants")
+
+
+def intent_status():
+    if not os.path.exists(INTENT):
+        return "missing"
+    text = open(INTENT).read()
+    return "present" if all(h in text for h in HEADINGS) else "incomplete"
+
+
+def handoffs():
+    """Sorted [(date, filename, unit-or-None)] for handoffs/YYYY-MM-DD-*.md."""
+    out = []
+    for f in sorted(os.listdir(HANDOFFS)) if os.path.isdir(HANDOFFS) else []:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}-.+\.md$", f):
+            continue
+        m = re.search(r"^unit:\s*(\S+)", open(os.path.join(HANDOFFS, f)).read(), re.M | re.I)
+        out.append((f[:10], f, m.group(1) if m else None))
+    return out
+
+
+def clock():
+    """Session-start timestamps from the hook-written log, or None if absent."""
+    if not os.path.exists(CLOCK):
+        return None
+    return [ln.split()[0] for ln in open(CLOCK) if ln.strip()]
+
+
+def work_dates():
+    """UTC dates of commits touching files outside the ledger, oldest first."""
+    log = git("log", "--reverse", "--format=%cI", "--", ".", ":(exclude)" + HANDOFFS,
+              ":(exclude)" + UNITS, ":(exclude).dokime") or ""
+    return [utc_date(x) for x in log.splitlines()]
+
+
+def unit_open_on(units, name, date):
+    u = next((u for u in units if u["name"] == name), None)
+    return bool(u) and utc_date(u["opened_at"]) <= date and (u["status"] != "closed" or (u.get("closed_at") or "9") [:10] > date)
+
+
+def check_unit(u, at, starts, hs, days):
+    r = {"name": u["name"], "status": u["status"], "flags": []}
+    r["condition"] = run_condition(u["done_condition"]) if at != "stop" else "unverified"
+    bad = [ev for ev in u["evidence"] if verify_evidence(ev, u["opened_at"])]
+    r["evidence"] = "valid" if not bad else "invalid"
+    r["pin"] = pin_status(u)
+    if r["pin"].startswith("CHANGED"):
+        r["flags"].append("pin-changed")
+    if bad:
+        r["flags"].append("evidence-invalid")
+    if u["status"] == "open" and r["condition"] == "pass":
+        r["flags"].append("met-but-open")
+    if u["status"] != "closed" and at != "stop":
+        opened = u["opened_at"]
+        r["sessions"] = None if starts is None else 1 + sum(1 for t in starts if t > opened)
+        r["handoffs"] = sum(1 for h in hs if h[0] >= utc_date(opened))
+        r["commit_days"] = len(set(d for d in days if d >= utc_date(opened)))
+        r["ceiling"] = u["ceiling_sessions"]
+        if r["sessions"] is not None and r["sessions"] > u["ceiling_sessions"]:
+            r["flags"].append("over-ceiling")
+    return r
+
+
+def run_check(at="all"):
+    units, hs, days, starts = all_units(), handoffs(), work_dates(), clock()
+    rep = {"at": at, "intent": intent_status(), "units": [], "flags": []}
+    if rep["intent"] != "present" and at != "stop":
+        rep["flags"].append("intent-" + rep["intent"])
+    for u in units:
+        r = check_unit(u, at, starts, hs, days)
+        rep["units"].append(r)
+        rep["flags"] += ["%s(%s)" % (f, u["name"]) for f in r["flags"]]
+    if at != "stop":
+        last = hs[-1] if hs else None
+        prev = hs[-2][0] if len(hs) > 1 else ""
+        rep["handoffs"] = {"count": len(hs), "last": last and last[1], "unit": last and last[2],
+                           "unit_valid": bool(last and last[2] and unit_open_on(units, last[2], last[0]))}
+        rep["sessions"] = {"clock": None if starts is None else len(starts), "handoffs": len(hs),
+                           "commit_days": len(set(days)), "divergent": False}
+        if starts is not None and (len(hs) < len(starts) - 1 or len(set(days)) > len(starts)):
+            rep["sessions"]["divergent"] = True
+        if last and not rep["handoffs"]["unit_valid"] and any(d > prev for d in days):
+            rep["flags"].append("work-without-unit(%s)" % last[1])
+    rep["ok"] = not rep["flags"]
+    return rep
+
+
+def render(rep):
+    L = ["intent: " + rep["intent"]]
+    for r in rep["units"]:
+        line = "unit %s: %s  condition %s  evidence %s  pin %s" % (
+            r["name"], r["status"], r["condition"], r["evidence"], r["pin"])
+        if "ceiling" in r:
+            line += "  sessions %s/%d" % ("?" if r["sessions"] is None else r["sessions"], r["ceiling"])
+        L.append(line + "".join("  " + f.upper() for f in r["flags"]))
+    if "sessions" in rep:
+        h, s = rep["handoffs"], rep["sessions"]
+        L.append("handoffs: %d  last %s  unit %s" % (h["count"], h["last"] or "-",
+                 (h["unit"] or "-") + ("" if not h["unit"] or h["unit_valid"] else " (INVALID)")))
+        L.append("sessions: %s (clock)  handoffs %d  commit-days %d%s" % (
+            "unknown" if s["clock"] is None else s["clock"], s["handoffs"], s["commit_days"],
+            "  DIVERGENT" if s["divergent"] else ""))
+    L.append("flags: " + (" ".join(rep["flags"]) or "none"))
+    return "\n".join(L)
+
+
+def cmd_check(a):
+    rep = run_check(a.at)
+    text = render(rep)
+    if rep["flags"] and a.warn_only:
+        text += "\nwarning: %d flag(s), exit downgraded by --warn-only" % len(rep["flags"])
+    elif rep["flags"]:
+        raise Flagged(rep, text)
+    return rep, text
+
+
+def cmd_status(a):
+    rep = run_check("all")
+    n, u = len(rep["flags"]), len(rep["units"])
+    s = rep["sessions"]["clock"]
+    line = "dokime: %s | intent %s | %d unit%s | sessions %s" % (
+        "ok" if not n else "%d flag%s: %s" % (n, "s"[n == 1:], " ".join(rep["flags"])),
+        rep["intent"], u, "s"[u == 1:], "unknown" if s is None else s)
+    return rep, line
+
+
+def cmd_session_start(a):
+    """SessionStart hook: append to the clock, print the full check, never block."""
+    os.makedirs(os.path.dirname(CLOCK), exist_ok=True)
+    with open(CLOCK, "a") as f:
+        f.write("%s %s\n" % (now(), git("rev-parse", "--short", "HEAD") or "-"))
+    rep = run_check("all")
+    return rep, render(rep)
+
+
+def cmd_stop_hook(a):
+    """Stop hook: ledger-integrity rules only; exit 2 with stderr only under --strict."""
+    try:
+        if json.load(sys.stdin).get("stop_hook_active"):
+            return {"skipped": True}, ""
+    except (ValueError, OSError):
+        pass
+    rep = run_check("stop")
+    if rep["flags"] and a.strict:
+        raise Flagged(rep, render(rep), code=2)
+    if rep["flags"]:
+        return rep, json.dumps({"systemMessage": "dokime: " + " ".join(rep["flags"])})
+    return rep, ""
+
+
+class Flagged(DokimeError):
+    def __init__(self, rep, text, code=1):
+        super().__init__(text)
+        self.rep, self.code = rep, code
+
+
 # -------------------------------------------------------------------- cli
 def build_parser():
     p = argparse.ArgumentParser(prog="dokime", description=__doc__.splitlines()[0])
@@ -287,6 +450,14 @@ def build_parser():
         s.add_argument("--by", help="who closes (default: git user.name)")
         s.add_argument("--force", metavar="REASON", help="record REASON and override verification failures")
     add("list", cmd_list, "list units")
+    s = add("check", cmd_check, "print the status block; exit 1 on any flag")
+    s.add_argument("--at", choices=("all", "start", "stop"), default="all",
+                   help="stop = ledger integrity only (no run: conditions, no session rules)")
+    s.add_argument("--warn-only", action="store_true", help="exit 0 even when flagged")
+    add("status", cmd_status, "one-line status")
+    add("session-start", cmd_session_start, "SessionStart hook: tick the clock, print the check")
+    s = add("stop-hook", cmd_stop_hook, "Stop hook: integrity rules; blocks only with --strict")
+    s.add_argument("--strict", action="store_true", help="exit 2 (blocks) when flagged")
     return p
 
 
@@ -295,13 +466,20 @@ def main(argv=None):
     try:
         os.chdir(root())
         data, text = a.fn(a)
+    except Flagged as ex:
+        print(json.dumps(ex.rep, indent=2, sort_keys=True) if a.json else str(ex),
+              file=sys.stderr if ex.code == 2 else sys.stdout)
+        return ex.code
     except DokimeError as ex:
         if a.json:
             print(json.dumps({"error": str(ex)}))
         else:
             print("dokime: " + str(ex), file=sys.stderr)
         return 1
-    print(json.dumps(data, indent=2, sort_keys=True) if a.json else text)
+    if a.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+    elif text:
+        print(text)
     return 0
 
 
