@@ -1,0 +1,34 @@
+name: test
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # the pin check reads git history
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: unit and replay tests
+        run: python -m unittest discover -s tests -q
+      - name: line budget (600 excluding tests)
+        run: |
+          n=$(grep -cvE '^\s*(#|$)' dokime.py); echo "dokime.py: $n lines"; test "$n" -le 600
+      - name: ledger integrity (blocking; pin, evidence, missing units)
+        run: python dokime.py check --at stop
+      - name: full check (informational; CI has no session clock)
+        run: python dokime.py check --warn-only

@@ -1,0 +1,16 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": "2026-09-13T14:26:08+00:00",
+  "closed_by": "deephanson94",
+  "done_condition": "run: grep -q 'unittest discover' .github/workflows/test.yml",
+  "done_condition_sha256": "620cd87981f6da7b61646bb81943713bc17e3e9b974f98155ac6d80420ab6899",
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "c425463"
+    }
+  ],
+  "name": "ci",
+  "opened_at": "2026-09-13T14:22:41+00:00",
+  "status": "closed"
+}
