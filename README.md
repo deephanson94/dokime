@@ -31,6 +31,48 @@ pip install .            # gives you the `dokime` command
 # or just copy dokime.py into the repo and run python3 dokime.py
 ```
 
+## Adopting in an existing repo
+
+dokime is added to a repository that already has history, a `CLAUDE.md`, and
+possibly Claude Code hooks. Nothing is written until you say so.
+
+```
+cd your-repo
+pip install /path/to/dokime        # or: cp /path/to/dokime/dokime.py .
+dokime init                        # report only: what is missing, and the exact diff per file
+dokime init --write=all            # the intent interview needs a terminal or DOKIME_INTERVIEW
+dokime check                       # baseline; exit 0 on a clean adoption
+git add -A && git commit -m "Adopt dokime"
+```
+
+What `init` does to files you already have:
+
+- `.claude/settings.json`: if the `hooks` key is absent or empty, the two dokime
+  hooks are added and every other setting is kept; the file is rewritten as
+  two-space JSON. If hooks already exist, init prints the snippet and does not
+  write; you paste it in.
+- `CLAUDE.md`: three lines are appended between `<!-- dokime -->` markers. The
+  rest of the file is untouched.
+- `.gitignore`: one line, `.dokime/`, is appended if absent. The session clock
+  lives there, uncommitted: it is per checkout, not counted across clones or in
+  CI, and it can be edited without a diff. It is a counter, not an audit record.
+- Existing commits and branches: never touched. `check` reads history and
+  writes nothing to git.
+
+The hook command depends on where dokime lives. If `dokime` is on PATH the hook
+runs `dokime session-start`. Otherwise, with `dokime.py` inside the repo, it
+runs `python3 "$CLAUDE_PROJECT_DIR/dokime.py" session-start`, which survives a
+clone; with `dokime.py` elsewhere it is an absolute path, which does not.
+
+The first session: open a unit and commit `units/`, start Claude Code and expect
+the status block in its context, work and commit, end with
+`handoffs/YYYY-MM-DD-<topic>.md` containing `unit: <name>`, then close the unit
+with the work commit as evidence. dokime records and reports; it does not stop
+the agent.
+
+`dokime uninstall` removes the hooks, the CLAUDE.md block and the `.gitignore`
+line, and keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`.
+
 ## Use
 
 ```
@@ -124,6 +166,7 @@ dokime does not:
   start.
 - Know whether a commit is relevant to a unit.
 - See work that produces no commit and no handoff.
+- Keep a tamper-proof session count. The clock is a local, uncommitted file.
 - Verify a prose done condition. You do.
 
 ## Tests and fixture

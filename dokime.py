@@ -675,7 +675,7 @@ def build_parser():
     s.add_argument("--strict", action="store_true", help="exit 2 (blocks) when flagged")
     s = add("init", cmd_init, "report missing pieces; write only with --write")
     s.add_argument("--write", metavar="PIECES", help="all or comma list of " + ",".join(PIECES))
-    add("uninstall", cmd_uninstall, "remove hooks, CLAUDE.md block and .dokime/; keep records")
+    add("uninstall", cmd_uninstall, "remove hooks, CLAUDE.md block and .gitignore line; keep records")
     s = add("scan", cmd_scan, "find the earliest recent commit where a run: condition passes")
     s.add_argument("--condition", required=True)
     s.add_argument("--limit", type=int, default=20, help="commits to walk back (default 20)")
