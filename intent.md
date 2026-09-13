@@ -69,10 +69,11 @@ Added by the Phase 0 review:
   empty, when any ref fails to resolve, or when a `run:` condition exits non-zero.
   `close --force <reason>` records the reason in the unit and is itself a status.
 - Never edit `intent.md` or a pinned `done_condition` without asking.
-- `done_condition_sha256` is computed at `open` and never edited. `opened_commit`
-  is recorded at the first commit that contains the unit file. `check` compares
-  the current condition against both and reports `unchanged`, `CHANGED since
-  <sha>`, or `UNVERIFIABLE`.
+- `done_condition_sha256` is computed at `open` and never edited. The commit
+  that first added the unit file is derived from git history, never stored.
+  `check` compares the current condition against both and reports `unchanged`,
+  `CHANGED since <sha>`, or `UNVERIFIABLE`. `close` refuses on `CHANGED`
+  without `--force`.
 - Every command has `--json`.
 - `check` prints statuses only. No prose judgements.
 - `unverified` never counts as `pass`.
@@ -90,11 +91,11 @@ Added by the Phase 0 review:
 - All times are UTC.
 - The Stop hook never executes `run:` conditions. By default it prints and exits
   0. Under `--strict` it exits 2 on ledger-integrity rules only (pin, evidence
-  refs, met-but-open on an already-evaluated condition). It always short-circuits
-  when `stop_hook_active` is set.
+  refs). It always short-circuits when `stop_hook_active` is set.
 - The only unconditional gate is `dokime close`.
-- `init` writes nothing without `--write`. `uninstall` removes exactly what
-  `init` wrote and leaves a visible diff.
+- `init` writes nothing without `--write`. `uninstall` removes the hooks, the
+  CLAUDE.md block and the `.gitignore` line, and keeps every record: `intent.md`,
+  `units/`, `handoffs/`, `.dokime/`. It never rewrites a file it changes nothing in.
 - Under 600 lines of code excluding tests. No dependencies.
 
 ## Decisions

@@ -1,0 +1,16 @@
+{
+  "ceiling_sessions": 3,
+  "closed_at": "2026-09-13T13:17:23+00:00",
+  "closed_by": "deephanson94",
+  "done_condition": "run: python3 -m unittest discover -s tests -q",
+  "done_condition_sha256": "37404a916a38c47782cd90ed9b975626f8d9064e696101e68eaf656b88ea2d64",
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "8c9b697"
+    }
+  ],
+  "name": "build",
+  "opened_at": "2026-09-13T12:14:17+00:00",
+  "status": "closed"
+}
