@@ -5,6 +5,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import dokime, fixture  # noqa: E402
+os.environ.pop("DOKIME_NESTED", None)  # a unit's condition may run this suite; the tests' own repos must still run conditions
 
 
 def git(*a, when=None):
