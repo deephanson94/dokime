@@ -92,8 +92,8 @@ Added by the Phase 0 review:
   output of the mid-session hooks (Stop, PostToolUse).
 - Evidence refs: a `commit` is an abbreviated or full SHA (never a symbolic ref),
   reachable from HEAD, dated after `opened_at`, touching at least one non-empty
-  file outside `handoffs/` and `units/`. An `artifact` is a path that exists and is
-  tracked. A `sha256` is `path:hash` and the hash matches the file's content.
+  file outside the ledger (`units/`, the handoff directory, `.dokime/`). An
+  `artifact` is a path that exists and is tracked. A `sha256` is `path:hash` and the hash matches the file's content.
 - Stored timestamps (`opened_at`, `closed_at`, the clock) are UTC. Commit days are
   taken in the committer's own zone, the date a person would write for that day.
 - The mid-session hooks (Stop, PostToolUse) never execute `run:` conditions.
@@ -151,3 +151,11 @@ Recorded so the deviations from the original specification are visible.
     (verified against Claude Code 2.1.270: no Stop variant exists in
     `hookSpecificOutput`), so it carries the human sentences; `--strict`'s
     stderr and PostToolUse `additionalContext` carry the block.
+12. The handoff directory is configurable, repo-relative only, as
+    `{"dokime": {"handoffs": "<dir>"}}` in `.claude/settings.json`; `init`
+    detects a tracked `handoffs/` or `sessions/` directory elsewhere and
+    `--write=handoffs` records it instead of creating `handoffs/`. The ledger
+    exclusions (what is work, what is evidence) derive from that one value, so
+    a handoff commit at the configured path is never work and never evidence.
+    An out-of-tree path is refused: `check` must answer identically from every
+    clone.

@@ -154,6 +154,10 @@ line and more text is not seen; the tell is a commit you trailered still
 counted in `work-without-unit`. The block's last line,
 `next:`, names the one command the current state admits, so nothing has to be
 remembered. Handoffs are optional: if you keep `handoffs/YYYY-MM-DD-<topic>.md`
+(or the same files in a directory named by `{"dokime": {"handoffs": "docs/handoffs"}}`
+in `.claude/settings.json`, which `init --write=handoffs` records when it finds a
+tracked `handoffs/` or `sessions/` directory elsewhere; the path must be inside
+the repository, so `check` answers the same from every clone)
 files they are counted as session records, in whatever format you already use.
 
 `open` refuses a `run:` condition that already passes; a unit needs a condition

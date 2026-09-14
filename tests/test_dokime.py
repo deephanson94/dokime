@@ -271,7 +271,6 @@ class CheckTest(RepoCase):
         code, out, _ = run("check", "--json")
         self.assertEqual(code, 1)
         self.assertIn("intent-missing", json.loads(out)["flags"])
-        self.assertEqual(run("check", "--warn-only")[0], 0)
         code, out, _ = run("check", "--at", "hook", "--json")
         self.assertEqual((code, json.loads(out)["flags"]), (1, ["intent-missing"]))   # no condition needed, so stop sees it
         self.assertNotIn("next", json.loads(out))
@@ -510,6 +509,27 @@ class InitTest(RepoCase):
         self.assertEqual(code, 0)
         self.assertIn("commit work with the trailer 'Unit: u'", out)
 
+    def test_configured_handoff_path(self):
+        """A repo that keeps handoffs elsewhere: init finds the dir, --write=handoffs records it, and the ledger rules follow it."""
+        write("docs/handoffs/2026-01-01-a.md", "unit: u\n"); git("add", "-A"); git("commit", "-qm", "handoff", when="2026-01-01T00:00:00+00:00")
+        self.assertIn("handoffs: found docs/handoffs; --write=handoffs records it", run("init")[1])
+        self.assertEqual(run("init", "--write=handoffs")[0], 0)
+        self.assertEqual(json.loads(dokime.read(".claude/settings.json"))["dokime"], {"handoffs": "docs/handoffs"})
+        self.assertFalse(os.path.exists("handoffs"))
+        self.assertEqual(dokime.run_check("all")["handoffs"], {"count": 1, "last": "2026-01-01-a.md"})
+        self.open_at("u", "2026-01-02T00:00:00+00:00")
+        write("docs/handoffs/2026-01-03-b.md", "n\n"); git("add", "-A"); git("commit", "-qm", "handoff only", when="2026-01-03T00:00:00+00:00")
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        self.assertNotIn(sha, [c["sha"] for c in dokime.commits()])                      # a handoff-only commit is not work
+        self.assertIn("outside the ledger", run("close", "u", "--evidence", "commit:" + sha)[2])   # and not evidence
+        self.assertIn("ledger files are not evidence", run("close", "u", "--evidence", "artifact:docs/handoffs/2026-01-03-b.md")[2])
+        self.assertIn("handoffs: present", run("init")[1])
+        run("init", "--write=hooks")                                                      # a later hooks write keeps the key
+        self.assertEqual(json.loads(dokime.read(".claude/settings.json"))["dokime"], {"handoffs": "docs/handoffs"})
+        write(".claude/settings.json", json.dumps({"dokime": {"handoffs": "/srv/vault/handoffs"}}))
+        code, _, err = run("check")
+        self.assertEqual((code, "inside the repository" in err), (1, True))              # out-of-tree paths are refused
+
     def test_interview_declined_writes_nothing(self):
         os.remove("intent.md")
         write("answers.txt", "g\n\nn\n\na\n\ni\n\nno\n")
@@ -746,7 +766,7 @@ class RegressionTest(RepoCase):
         write("handoffs/2026-01-01-bin.md", "unit: u\n")
         with open("handoffs/2026-01-01-bin.md", "ab") as f:
             f.write(b"\xff\xfe")
-        self.assertEqual(run("check", "--warn-only")[0], 0)
+        self.assertIn(run("check")[0], (0, 1))                        # a binary handoff name is not a crash
         os.remove("intent.md")
         os.environ["DOKIME_INTERVIEW"] = "missing.txt"
         try:
