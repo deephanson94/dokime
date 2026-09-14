@@ -60,10 +60,10 @@ class RepoCase(unittest.TestCase):
         self.assertEqual(run("session-start")[0], 0)
         sys.stdin = io.StringIO("")
 
-    def work_commit(self, name="w.txt", when="2026-06-01T00:00:00+00:00"):
+    def work_commit(self, name="w.txt", when="2026-06-01T00:00:00+00:00", unit=None):
         write(name, name + "\n")
         git("add", "-A")
-        git("commit", "-qm", "work", when=when)
+        git("commit", "-qm", "work" + ("\n\nUnit: %s" % unit if unit else ""), when=when)
         return self.head()
 
 
@@ -134,7 +134,7 @@ class EvidenceTest(RepoCase):
         self.assertIn("symbolic", self.verify("commit", "HEAD"))
         self.assertIn("before unit opened", self.verify("commit", subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD~1"], text=True).strip()))
-        self.assertIn("before unit opened", self.verify("commit", self.head()))  # same second as open
+        self.assertIsNone(self.verify("commit", self.head()))  # same second as open is fine; this commit also carries the test's vendored copy
         write("units/.gitkeep", ""); git("add", "-A"); git("commit", "-qm", "ledger", when="2026-06-01T00:00:00+00:00")
         self.assertIn("outside the ledger", self.verify("commit", self.head()))
         git("commit", "-q", "--allow-empty", "-m", "empty", when="2026-06-01T00:00:01+00:00")
@@ -191,23 +191,24 @@ class CountTest(RepoCase):
         self.assertIsNone(r["sessions"])
         self.assertNotIn("over-ceiling", r["flags"])
         starts = ["2026-03-01T09:00:00+00:00", "2026-03-02T09:00:00+00:00", "2026-03-03T09:00:00+00:00"]
-        r = dokime.check_unit(u, "all", starts, [("2026-03-01", "f", "u"), ("2026-03-02", "g", "u")],
-                              ["2026-03-01", "2026-03-02", "2026-03-02"])
+        r = dokime.check_unit(u, "all", starts, [("2026-03-01", "f"), ("2026-03-02", "g")],
+                              [{"date": d} for d in ("2026-03-01", "2026-03-02", "2026-03-02")])
         self.assertEqual((r["sessions"], r["handoffs"], r["commit_days"]), (3, 2, 2))
         self.assertIn("over-ceiling", r["flags"])
-        r = dokime.check_unit(u, "all", starts[:1], [("2026-03-0%d" % d, "f", "u") for d in (1, 2, 3, 4)], [])
+        r = dokime.check_unit(u, "all", starts[:1], [("2026-03-0%d" % d, "f") for d in (1, 2, 3, 4)], [])
         self.assertEqual(r["sessions"], 4)  # handoffs outnumber the clock: handoffs win
         self.assertIn("over-ceiling", r["flags"])
         write(dokime.CLOCK, "\n".join(starts) + "\n")
         rep = dokime.run_check("all")
         self.assertEqual(rep["sessions"]["clock"], 3)
-        self.assertTrue(rep["sessions"]["divergent"])  # 3 starts, 0 handoffs
+        self.assertFalse(rep["sessions"]["divergent"])  # no handoffs/ dir: handoffs are not expected
+        os.makedirs("handoffs")
+        self.assertTrue(dokime.run_check("all")["sessions"]["divergent"])  # handoffs in use: 3 starts, 0 handoffs
 
-    def test_handoff_parsing_and_unit_validity(self):
-        write("handoffs/2026-03-02-x.md", "notes\nUnit: u\n")
+    def test_handoffs_are_session_records_only(self):
+        write("handoffs/2026-03-02-x.md", "notes\n")
         write("handoffs/not-a-handoff.md", "unit: u\n")
-        hs = dokime.handoffs()
-        self.assertEqual(hs, [("2026-03-02", "2026-03-02-x.md", "u")])
+        self.assertEqual(dokime.handoffs(), [("2026-03-02", "2026-03-02-x.md")])
         os.environ["DOKIME_NOW"] = "2026-03-01T00:00:00+00:00"
         run("open", "u", "--condition", "x")
         units = dokime.all_units()
@@ -321,8 +322,9 @@ class InitTest(RepoCase):
         self.assertIn("nothing written", out)
         self.assertIn("+++ .claude/settings.json", out)
         self.assertFalse(os.path.exists(".claude"))
-        code, out, _ = run("init", "--write=intent")  # no terminal, no answers
-        self.assertEqual((code, "intent: not written" in out, os.path.exists("intent.md")), (0, True, False))
+        code, out, _ = run("init", "--write=intent")  # no terminal: a TODO stub, not a red check
+        self.assertEqual((code, "intent: written" in out, dokime.intent_status()), (0, True, "stub"))
+        os.remove("intent.md")
         write("answers.txt", "g1\ng2\n\nn1\n\na1\n\ni1\n\ny\n")
         os.environ["DOKIME_INTERVIEW"] = "answers.txt"
         try:
@@ -330,8 +332,12 @@ class InitTest(RepoCase):
         finally:
             del os.environ["DOKIME_INTERVIEW"]
         self.assertEqual(code, 0)
-        self.assertEqual(set(json.loads(out)["pieces"].values()), {"written"})
+        pieces = json.loads(out)["pieces"]
+        self.assertEqual({k: v for k, v in pieces.items() if k != "handoffs"}, {k: "written" for k in pieces if k != "handoffs"})
+        self.assertTrue(pieces["handoffs"].startswith("optional") and not os.path.exists("handoffs"))
         self.assertIn("## Goals\n- g1\n- g2\n", dokime.read("intent.md"))
+        run("init", "--write=handoffs")
+        self.assertNotIn("unit:", dokime.read("handoffs/TEMPLATE.md"))
         self.assertEqual(run("check")[0], 0)
         hooks = json.loads(dokime.read(dokime.SETTINGS))["hooks"]
         self.assertEqual(set(hooks), {"SessionStart", "Stop"})
@@ -340,6 +346,7 @@ class InitTest(RepoCase):
         self.assertIn(".dokime/", dokime.read(".gitignore"))
         code, out, _ = run("init", "--json")
         self.assertEqual(set(json.loads(out)["pieces"].values()), {"present"})
+        shutil.rmtree("handoffs")
 
     def test_interview_declined_writes_nothing(self):
         os.remove("intent.md")
@@ -371,7 +378,7 @@ class InitTest(RepoCase):
     def test_uninstall_keeps_records_and_foreign_config(self):
         write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
         write("CLAUDE.md", "# mine\n")
-        run("init", "--write=all")
+        run("init", "--write=all,handoffs")
         self.start()
         code, out, _ = run("uninstall")
         self.assertEqual(code, 0)
@@ -456,22 +463,98 @@ class RegressionTest(RepoCase):
         dokime.run_check("all")
         self.assertFalse(os.path.exists("ran-%d" % os.getpid()))
 
-    def test_handoff_on_close_day_is_valid(self):
+    def test_attribution_by_trailer(self):
+        opened = self.open_at("u", "2026-03-01T00:00:00+00:00")
+        os.environ["DOKIME_NOW"] = "2026-03-01T09:00:00+00:00"; self.start()
+        rep = dokime.run_check("all")
+        self.assertEqual(rep["attribution"], "0 of 0 commits since last session")
+        self.assertEqual(rep["flags"], [])                                  # governance-only commits are not work
+        self.work_commit("a.txt", when="2026-03-01T10:00:00+00:00", unit="u")
+        self.work_commit("b.txt", when="2026-03-01T11:00:00+00:00")
+        self.work_commit("c.txt", when="2026-03-01T12:00:00+00:00", unit="ghost")
+        rep = dokime.run_check("all")
+        self.assertEqual(rep["attribution"], "1 of 3 commits since last session")
+        self.assertIn("work-without-unit(2 commits)", rep["flags"])
+        self.assertNotIn("work-without-unit", " ".join(dokime.run_check("stop")["flags"]))
+        write("intent.md", fixture.INTENT + "\n"); git("add", "-A"); git("commit", "-qm", "gov", when="2026-03-01T13:00:00+00:00")
+        self.assertEqual(len(dokime.commits()), 5)   # base, open (carries the test's vendored copy), 3 work; the intent.md edit is not work
+        os.environ["DOKIME_NOW"] = "2026-03-02T09:00:00+00:00"; self.start()
+        self.assertIn("work-without-unit(2 commits)", dokime.run_check("all")["flags"])  # window spans the previous session
+        os.environ["DOKIME_NOW"] = "2026-03-03T09:00:00+00:00"; self.start()
+        self.assertEqual(dokime.run_check("all")["attribution"], "0 of 0 commits since last session")
+        self.assertFalse(dokime.run_check("all")["sessions"]["divergent"])   # no handoffs/ dir: handoffs are not expected
+
+    def test_trailer_must_name_a_unit_open_on_that_day(self):
         self.open_at("u", "2026-03-01T00:00:00+00:00")
-        good = self.work_commit(when="2026-03-02T00:00:00+00:00")
+        os.environ["DOKIME_NOW"] = "2026-03-01T09:00:00+00:00"; self.start()
+        good = self.work_commit("a.txt", when="2026-03-02T00:00:00+00:00", unit="u")
         os.environ["DOKIME_NOW"] = "2026-03-02T10:00:00+00:00"
         run("close", "u", "--evidence", "commit:" + good)
-        write("handoffs/2026-03-02-done.md", "unit: u\n")
-        rep = dokime.run_check("all")
-        self.assertTrue(rep["handoffs"]["unit_valid"])
-        self.assertEqual(rep["flags"], [])
+        self.work_commit("b.txt", when="2026-03-02T11:00:00+00:00", unit="u")   # same day as close: still valid
+        self.work_commit("c.txt", when="2026-03-03T11:00:00+00:00", unit="u")   # after close: not
+        os.environ["DOKIME_NOW"] = "2026-03-03T12:00:00+00:00"; self.start()
+        self.assertIn("work-without-unit(1 commit)", dokime.run_check("all")["flags"])
 
-    def test_second_handoff_same_day_cannot_hide_work(self):
-        write("handoffs/2026-01-01-a.md", "unit: nope\n")
-        write("handoffs/2026-01-01-b.md", "unit: nope\n")
-        self.assertTrue(any(f.startswith("work-without-unit(2026-01-01-b") for f in dokime.run_check("all")["flags"]))
-        write("handoffs/2999-01-01-z.md", "unit: nope\n")
-        self.assertIn("handoff-future(2999-01-01-z.md)", dokime.run_check("all")["flags"])
+    def test_close_without_evidence_lists_trailer_commits(self):
+        self.open_at("u", "2026-03-01T00:00:00+00:00")
+        sha = self.work_commit("a.txt", unit="u")
+        code, _, err = run("close", "u")
+        self.assertEqual((code, ("'Unit: u': " + sha) in err), (1, True))
+        self.assertEqual(run("close", "u", "--evidence", "commit:" + sha)[0], 0)
+
+    def test_next_line(self):
+        self.assertTrue(dokime.run_check("all")["next"].startswith("dokime open <name>"))
+        self.open_at("u", "2026-03-01T00:00:00+00:00", cond="run: test -f ok")
+        self.assertIn("dokime init --write=hooks", dokime.run_check("all")["next"])
+        self.start()
+        self.assertIn("trailer 'Unit: u'", dokime.run_check("all")["next"])
+        write("ok", "")
+        self.assertTrue(dokime.run_check("all")["next"].startswith("dokime close u"))
+        self.assertNotIn("next", dokime.run_check("stop"))
+        self.assertIn("\nnext: ", dokime.render(dokime.run_check("all")))
+
+    def test_offsets_do_not_move_the_window_or_the_candidates(self):
+        self.open_at("u", "2026-03-01T03:00:00+00:00")
+        os.environ["DOKIME_NOW"] = "2026-03-01T04:00:00+00:00"; self.start()
+        early = self.work_commit("a.txt", when="2026-03-01T09:00:00+08:00", unit="u")   # 01:00Z: before open and tick
+        self.work_commit("b.txt", when="2026-03-01T00:00:00-07:00")                     # 07:00Z: after tick, no trailer
+        rep = dokime.run_check("all")
+        self.assertEqual(rep["attribution"], "0 of 1 commits since last session")
+        self.assertIn("work-without-unit(1 commit)", rep["flags"])
+        code, _, err = run("close", "u")
+        self.assertEqual((code, early in err), (1, False))                            # not offered: it predates open
+
+    def test_no_clock_window_falls_back_to_the_open_unit(self):
+        self.open_at("u", "2026-03-01T00:00:00+00:00")
+        self.work_commit("a.txt", when="2026-03-02T00:00:00+00:00")
+        rep = dokime.run_check("all")
+        self.assertEqual(rep["attribution"], "0 of 2 commits since unit opened")   # the open commit carries the test's vendored copy
+        self.assertIn("work-without-unit(2 commits)", rep["flags"])
+        self.assertEqual(rep["units"][0]["evidence"], "none")
+
+    def test_session_start_survives_a_broken_ledger(self):
+        write("units/bad.json", "{not json")
+        sys.stdin = io.StringIO('{"source": "startup"}')
+        code, out, _ = run("session-start")
+        self.assertEqual((code, out.startswith("dokime: units/bad.json"), "next: fix the ledger" in out), (0, True, True))
+
+    def test_next_when_intent_missing(self):
+        os.remove("intent.md")
+        self.assertEqual(dokime.run_check("all")["next"], "dokime init --write=intent")
+
+    def test_intent_stub(self):
+        os.remove("intent.md")
+        code, out, _ = run("init", "--write=intent")            # no terminal: stub
+        self.assertEqual((code, "intent: written" in out, dokime.intent_status()), (0, True, "stub"))
+        self.assertEqual(run("check")[0], 0)
+        self.assertIn("intent: stub", run("check")[1])
+        write("answers.txt", "g\n\nn\n\na\n\ni\n\nno\n")
+        os.remove("intent.md"); os.environ["DOKIME_INTERVIEW"] = "answers.txt"
+        try:
+            self.assertIn("intent: not written", run("init", "--write=intent")[1])   # declined: nothing
+        finally:
+            del os.environ["DOKIME_INTERVIEW"]
+        self.assertFalse(os.path.exists("intent.md"))
 
     def test_session_count_when_unit_predates_clock(self):
         opened = self.open_at("u", "2026-03-01T00:00:00+00:00")
@@ -522,7 +605,7 @@ class RegressionTest(RepoCase):
         os.remove("intent.md")
         os.environ["DOKIME_INTERVIEW"] = "missing.txt"
         try:
-            self.assertIn("intent: not written", run("init", "--write=intent")[1])
+            self.assertIn("intent: not written", run("init", "--write=intent")[1])   # a named file that is missing is an error
         finally:
             del os.environ["DOKIME_INTERVIEW"]
         sys.stdin = io.StringIO('"x"')
@@ -537,24 +620,19 @@ class RegressionTest(RepoCase):
 
     def test_clock_absent_flag_only_with_open_unit(self):
         self.assertNotIn("clock-absent", dokime.run_check("all")["flags"])   # no units: not claimed
+        self.work_commit("w.txt")
         self.open_at("u", "2026-03-01T00:00:00+00:00")
         rep = dokime.run_check("all")
         self.assertEqual((rep["hooks"], "clock-absent" in rep["flags"]), ("absent", True))
         self.assertNotIn("clock-absent", dokime.run_check("stop")["flags"])
-        run("init", "--write=hooks")                       # hooks configured but never fired: still no clock
-        self.assertIn("clock-absent", dokime.run_check("all")["flags"])
+        run("init", "--write=hooks")                       # hooks configured, first session not started: not a flag
+        rep = dokime.run_check("all")
+        self.assertNotIn("clock-absent", rep["flags"])
+        self.assertIn("start a Claude Code session", rep["next"])
         os.remove(dokime.SETTINGS)
         self.start()                                       # a clock with no repo hook (user-level hooks): not flagged
         self.assertNotIn("clock-absent", dokime.run_check("all")["flags"])
-        shutil.rmtree(".dokime"); run("init", "--write=hooks")
-        self.start()
-        rep = dokime.run_check("all")
-        self.assertEqual((rep["hooks"], "clock-absent" in rep["flags"]), ("configured", False))
-        write(dokime.SETTINGS, '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "true # dokime"}]}]}}')
-        self.assertNotIn("clock-absent", dokime.run_check("all")["flags"])  # clock ticked: the config is not the test
-        shutil.rmtree(".dokime")
-        self.assertIn("clock-absent", dokime.run_check("all")["flags"])     # decorative hook, no clock: flagged
-        self.assertIn("hooks: configured", dokime.render(dokime.run_check("all")))
+        self.assertIn("hooks: absent", dokime.render(dokime.run_check("all")))
 
     def test_shallow_history_is_named(self):
         self.open_at("u", "2026-03-01T00:00:00+00:00")
@@ -573,7 +651,7 @@ class RegressionTest(RepoCase):
 
     def test_commit_days_use_committer_date(self):
         self.work_commit("late.txt", when="2026-09-14T01:00:00+08:00")   # 2026-09-13 in UTC
-        self.assertEqual(dokime.work_dates()[-1], "2026-09-14")
+        self.assertEqual(dokime.commits()[-1]["date"], "2026-09-14")
 
     def test_condition_that_invokes_check_does_not_recurse(self):
         cond = "run: python3 %s check --json | grep -q hooks" % dokime.__file__
