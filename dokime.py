@@ -12,6 +12,7 @@ KINDS = ("commit", "artifact", "sha256")
 SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 LEDGER_DIRS = (HANDOFFS + "/", UNITS + "/", ".dokime/")
+GOVERNANCE = [":(exclude)" + p for p in (HANDOFFS, UNITS, ".dokime", INTENT, "CLAUDE.md", ".claude", ".gitignore")]
 
 
 class DokimeError(Exception):
@@ -20,9 +21,7 @@ class DokimeError(Exception):
 
 # ---------------------------------------------------------------- helpers
 def now():
-    if os.environ.get("DOKIME_NOW"):
-        return os.environ["DOKIME_NOW"]
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+    return os.environ.get("DOKIME_NOW") or datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def parse_ts(iso):
@@ -61,11 +60,8 @@ def sha256_text(s):
 
 
 def sha256_file(path):
-    h = hashlib.sha256()
     with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def run_condition(cond, timeout=120):
@@ -113,9 +109,6 @@ def validate_unit(d):
     for i, ev in enumerate(d["evidence"]):
         if not isinstance(ev, dict) or ev.get("kind") not in KINDS or not isinstance(ev.get("ref"), str):
             e.append("evidence[%d] must be {kind: commit|artifact|sha256, ref: str}" % i)
-    for k in ("closed_at", "closed_by", "force_reason"):
-        if d.get(k) is not None and not isinstance(d[k], str):
-            e.append("wrong type: %s (want str or null)" % k)
     if d["status"] != "open" and not d["evidence"]:
         e.append("status %s without evidence" % d["status"])
     return e
@@ -225,10 +218,8 @@ def parse_evidence(items):
 
 # --------------------------------------------------------------- commands
 def cmd_open(a):
-    if not NAME_RE.fullmatch(a.name):
-        raise DokimeError("bad unit name %r (letters, digits, . _ -; no spaces or slashes)" % a.name)
-    if os.path.exists(unit_path(a.name)):
-        raise DokimeError("unit already exists: " + a.name)
+    if not NAME_RE.fullmatch(a.name) or os.path.exists(unit_path(a.name)):
+        raise DokimeError("bad unit name %r (letters, digits, . _ -; no spaces or slashes) or unit already exists" % a.name)
     cond = a.condition.strip()
     d = {"name": a.name, "opened_at": now(), "status": "open",
          "ceiling_sessions": a.ceiling, "done_condition": cond,
@@ -240,9 +231,8 @@ def cmd_open(a):
     if run_condition(cond) == "pass":
         raise DokimeError("done_condition already passes; a unit needs a condition that is false now")
     save_unit(d)
-    warn = [] if cond.startswith("run:") else ["done_condition is prose: it will stay unverified"]
-    return {"unit": d, "warnings": warn}, "opened %s (pin %s)%s" % (
-        a.name, d["done_condition_sha256"][:12], "".join("\nwarning: " + w for w in warn))
+    warn = "" if cond.startswith("run:") else "\nwarning: done_condition is prose: it will stay unverified"
+    return {"unit": d, "warnings": warn.strip()}, "opened %s (pin %s)%s" % (a.name, d["done_condition_sha256"][:12], warn)
 
 
 def finish(a, status):
@@ -251,7 +241,9 @@ def finish(a, status):
         raise DokimeError("unit already closed: " + a.name)
     evidence = d["evidence"] + parse_evidence(a.evidence)
     if not evidence:
-        raise DokimeError("refusing to set %s without evidence" % status)
+        named = [c["sha"][:7] for c in commits() if c["unit"] == a.name and c["ts"] > d["opened_at"]]
+        raise DokimeError("refusing to set %s without evidence; commits carrying 'Unit: %s': %s" % (
+            status, a.name, " ".join(named) or "none"))
     problems = []
     for ev in evidence:
         why = verify_evidence(ev, d["opened_at"])
@@ -291,18 +283,13 @@ def intent_status():
     if not os.path.exists(INTENT):
         return "missing"
     text = read(INTENT)
-    return "present" if all(h in text for h in HEADINGS) else "incomplete"
+    return ("stub" if "- TODO" in text else "present") if all(h in text for h in HEADINGS) else "incomplete"
 
 
 def handoffs():
-    """Sorted [(date, filename, unit-or-None)] for handoffs/YYYY-MM-DD-*.md."""
-    out = []
-    for f in sorted(os.listdir(HANDOFFS)) if os.path.isdir(HANDOFFS) else []:
-        if not re.match(r"^\d{4}-\d{2}-\d{2}-.+\.md$", f):
-            continue
-        m = re.search(r"^unit:\s*(\S+)", read(os.path.join(HANDOFFS, f)), re.M | re.I)
-        out.append((f[:10], f, m.group(1) if m else None))
-    return out
+    """Sorted [(date, filename)] for handoffs/YYYY-MM-DD-*.md; optional session records."""
+    names = sorted(os.listdir(HANDOFFS)) if os.path.isdir(HANDOFFS) else []
+    return [(f[:10], f) for f in names if re.fullmatch(r"\d{4}-\d{2}-\d{2}-.+\.md", f)]
 
 
 def clock():
@@ -312,11 +299,15 @@ def clock():
     return [ln.split()[0] for ln in read(CLOCK).splitlines() if ln.strip()]
 
 
-def work_dates():
-    """Commit dates (in the committer's own zone, like a handoff filename) outside the ledger."""
-    log = git("log", "--reverse", "--format=%cI", "--", ".", ":(exclude)" + HANDOFFS,
-              ":(exclude)" + UNITS, ":(exclude).dokime") or ""
-    return [parse_ts(x).date().isoformat() for x in log.splitlines()]
+def commits():
+    """Non-merge commits touching work (not ledger or governance files), oldest first, with their Unit: trailer."""
+    log = git("log", "--reverse", "--no-merges", "--format=%x1e%H%x1f%cI%x1f%(trailers:key=Unit,valueonly,separator=%x2c)",
+              "--", ".", *GOVERNANCE) or ""
+    out = []
+    for rec in filter(str.strip, log.split("\x1e")):  # str.strip also eats a leading separator, so filter, do not slice
+        sha, ts, unit = (rec.strip("\n").split("\x1f") + ["", ""])[:3]
+        out.append({"sha": sha, "ts": ts, "date": parse_ts(ts).date().isoformat(), "unit": unit.strip().split(",")[0] or None})
+    return out
 
 
 def hooks_configured():
@@ -329,7 +320,7 @@ def unit_open_on(units, name, date):
     return bool(u) and utc_date(u["opened_at"]) <= date and (u["status"] != "closed" or (u.get("closed_at") or "9")[:10] >= date)
 
 
-def check_unit(u, at, starts, hs, days):
+def check_unit(u, at, starts, hs, cs):
     r = {"name": u["name"], "status": u["status"], "flags": []}
     live = u["status"] != "closed"
     r["condition"] = run_condition(u["done_condition"]) if live and at != "stop" else "unverified"
@@ -346,7 +337,7 @@ def check_unit(u, at, starts, hs, days):
     if u["status"] != "closed" and at != "stop":
         opened = u["opened_at"]
         r["handoffs"] = sum(1 for h in hs if h[0] >= utc_date(opened))
-        r["commit_days"] = len(set(d for d in days if d >= utc_date(opened)))
+        r["commit_days"] = len(set(c["date"] for c in cs if c["date"] >= utc_date(opened)))
         r["ceiling"] = u["ceiling_sessions"]
         r["sessions"] = None if starts is None else max(  # highest source wins; the agent can only inflate
             1, sum(1 for t in starts if t > opened) + any(t <= opened for t in starts), r["handoffs"], r["commit_days"])
@@ -356,11 +347,11 @@ def check_unit(u, at, starts, hs, days):
 
 
 def run_check(at="all"):
-    units, hs, days, starts = all_units(), handoffs(), work_dates(), clock()
+    units, hs, cs, starts = all_units(), handoffs(), commits(), clock()
     rep = {"at": at, "intent": intent_status(), "units": [], "flags": [],
            "hooks": "configured" if hooks_configured() else "absent",
            "history": "shallow" if git("rev-parse", "--is-shallow-repository") == "true" else "full"}
-    if rep["intent"] != "present" and at != "stop":
+    if rep["intent"] not in ("present", "stub") and at != "stop":
         rep["flags"].append("intent-" + rep["intent"])
     if at == "stop" and rep["history"] == "shallow" and units:
         rep["flags"].append("history-shallow")
@@ -371,23 +362,29 @@ def run_check(at="all"):
         if not os.path.exists(path):
             rep["flags"].append("unit-missing(%s)" % path[len(UNITS) + 1:-5])
     for u in units:
-        r = check_unit(u, at, starts, hs, days)
+        r = check_unit(u, at, starts, hs, cs)
         rep["units"].append(r)
         rep["flags"] += ["%s(%s)" % (f, u["name"]) for f in r["flags"]]
     if at != "stop":
-        last = hs[-1] if hs else None
-        prev = max((h[0] for h in hs if last and h[0] < last[0]), default="")
-        rep["handoffs"] = {"count": len(hs), "last": last and last[1], "unit": last and last[2],
-                           "unit_valid": bool(last and last[2] and unit_open_on(units, last[2], last[0]))}
+        rep["handoffs"] = {"count": len(hs), "last": hs[-1][1] if hs else None}
         since = utc_date(starts[0]) if starts else ""
-        n_days, n_hs = len(set(d for d in days if d >= since)), sum(1 for h in hs if h[0] >= since)
+        n_days, n_hs = len(set(c["date"] for c in cs if c["date"] >= since)), sum(1 for h in hs if h[0] >= since)
         rep["sessions"] = {"clock": None if starts is None else len(starts), "handoffs": len(hs),
-                           "commit_days": len(set(days)),
+                           "commit_days": len(set(c["date"] for c in cs)),
                            "divergent": bool(starts) and (n_hs < len(starts) - 1 or n_days > len(starts))}
-        if last and last[0] > utc_date(now()):
-            rep["flags"].append("handoff-future(%s)" % last[1])
-        if last and not rep["handoffs"]["unit_valid"] and any(d > prev for d in days):
-            rep["flags"].append("work-without-unit(%s)" % last[1])
+        # attribution: since the previous session start, every work commit names a unit open on its date
+        window = [c for c in cs if starts and c["ts"] > (starts[-2] if len(starts) > 1 else starts[0])]
+        bad = [c for c in window if not (c["unit"] and unit_open_on(units, c["unit"], c["date"]))]
+        rep["attribution"] = "unused" if not any(c["unit"] for c in cs) else "%d of %d commits since last session" % (
+            len(window) - len(bad), len(window))
+        if bad:
+            rep["flags"].append("work-without-unit(%d commits)" % len(bad))
+        live = [r for r in rep["units"] if r["status"] != "closed"]
+        met = [r for r in live if r["condition"] == "pass"]
+        rep["next"] = ('dokime open <name> --condition "run: <a command that fails now>"' if not live else
+                       "dokime close %s --evidence commit:<sha>" % met[0]["name"] if met else
+                       "dokime init --write=hooks" if "clock-absent" in rep["flags"] else
+                       "commit work under unit %s with the trailer 'Unit: %s'" % (live[0]["name"], live[0]["name"]))
     rep["ok"] = not rep["flags"]
     return rep
 
@@ -402,12 +399,14 @@ def render(rep):
         L.append(line + ("  FORCED(%s)" % r["forced"] if r.get("forced") else "") + "".join("  " + f.upper() for f in r["flags"]))
     if "sessions" in rep:
         h, s = rep["handoffs"], rep["sessions"]
-        L.append("handoffs: %d  last %s  unit %s" % (h["count"], h["last"] or "-",
-                 (h["unit"] or "-") + ("" if not h["unit"] or h["unit_valid"] else " (INVALID)")))
+        L.append("handoffs: %d  last %s" % (h["count"], h["last"] or "-"))
         L.append("sessions: %s (clock)  handoffs %d  commit-days %d%s" % (
             "unknown" if s["clock"] is None else s["clock"], s["handoffs"], s["commit_days"],
             "  DIVERGENT" if s["divergent"] else ""))
+        L.append("attribution: " + rep["attribution"])
     L.append("flags: " + (" ".join(rep["flags"]) or "none"))
+    if "next" in rep:
+        L.append("next: " + rep["next"])
     return "\n".join(L)
 
 
@@ -479,11 +478,12 @@ class Flagged(DokimeError):
 SETTINGS, CLAUDE_MD, GITIGNORE = os.path.join(".claude", "settings.json"), "CLAUDE.md", ".gitignore"
 MARK, ENDMARK = "<!-- dokime -->", "<!-- /dokime -->"
 CLAUDE_LINES = MARK + """
-This repo is governed by dokime: intent.md is the agreement, units/ is the ledger, `dokime check` is the boundary check.
-Open a unit before work (`dokime open <name> --condition "run: ..."`) and end each session with handoffs/YYYY-MM-DD-<topic>.md containing a `unit: <name>` line.
+This repo is governed by dokime: intent.md is the agreement, units/ is the ledger, `dokime check` is the boundary check and its `next:` line names the command that applies.
+Open a unit before work (`dokime open <name> --condition "run: ..."`) and end every commit message with the trailer `Unit: <name>` in the final trailer block.
 Never edit intent.md or a unit's done_condition without asking.
 """ + ENDMARK + "\n"
-HANDOFF_TEMPLATE = "unit: <name>\n\n## Done\n\n## Next\n"
+HANDOFF_TEMPLATE = "## Done\n\n## Next\n"
+INTENT_STUB = "# intent\n\n" + "".join(h + "\n- TODO\n\n" for h in HEADINGS)
 QUESTIONS = (("Goals", "What must this repo achieve? (one per line, blank line ends)"), ("Non-goals", "What will it deliberately not do?"),
              ("Acceptance criteria", "What observable results mean done?"), ("Invariants", "What must never change while working?"))
 PIECES = ("units", "handoffs", "hooks", "claude-md", "gitignore", "intent")
@@ -505,8 +505,8 @@ def hook_config(c):
 
 def interview():
     if not sys.stdin.isatty() and os.environ.get("DOKIME_INTERVIEW") is None:
-        raise DokimeError("interview needs a terminal, or DOKIME_INTERVIEW=<answers file>: "
-                          "four blank-line-terminated blocks, then y")
+        print("no terminal for the interview: writing intent.md as a TODO stub; fill it in", file=sys.stderr)
+        return INTENT_STUB
     src = open(os.environ["DOKIME_INTERVIEW"]) if os.environ.get("DOKIME_INTERVIEW") else sys.stdin
     out = ["# intent", ""]
     for title, q in QUESTIONS:
@@ -529,7 +529,7 @@ def planned_writes():
     """{piece: (path, new_text_or_None, note)}; None means nothing to do."""
     plan = {}
     st = intent_status()
-    plan["intent"] = (INTENT, None if st == "present" else "<interview>", st)
+    plan["intent"] = (INTENT, None if st in ("present", "stub") else "<interview>", st)
     for piece, d, fn, body in (("units", UNITS, ".gitkeep", ""), ("handoffs", HANDOFFS, "TEMPLATE.md", HANDOFF_TEMPLATE)):
         plan[piece] = (os.path.join(d, fn), None if os.path.isdir(d) else body, "present" if os.path.isdir(d) else "missing")
     try:

@@ -19,8 +19,9 @@ sessions:
 
 - **(a) done-condition met, work continued.** A unit whose `run:` condition
   passes while the unit is still open prints `MET-BUT-OPEN`.
-- **(b) work with no named unit.** Commits since the last handoff, when that
-  handoff names no unit that was open on its date, print `work-without-unit`.
+- **(b) work with no named unit.** A commit since the previous session start
+  whose message carries no `Unit: <name>` trailer naming a unit open on that
+  day prints `work-without-unit`.
 
 Stdlib Python plus git. One file, under 600 lines. No dependencies.
 
@@ -102,10 +103,9 @@ What `init` does to files you already have:
   rule cannot run there; give CI `fetch-depth: 0`.
 
 The first session: open a unit and commit `units/`, start Claude Code and expect
-the status block in its context, work and commit, end with
-`handoffs/YYYY-MM-DD-<topic>.md` containing `unit: <name>` (your local date),
-then close the unit with the work commit as evidence. dokime records and
-reports; it does not stop the agent.
+the status block in its context with a `next:` line, work and commit with the
+trailer `Unit: <name>`, then close the unit with a work commit as evidence.
+dokime records and reports; it does not stop the agent.
 
 `dokime uninstall` removes the hooks, the CLAUDE.md block and the `.gitignore`
 line, and keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`.
@@ -125,10 +125,13 @@ dokime uninstall                 # remove hooks, the CLAUDE.md block and the .gi
 
 Every command takes `--json`.
 
-A handoff is `handoffs/YYYY-MM-DD-<topic>.md`, written at the end of a session,
-with a line `unit: <name>`. Use your own local date; commit days are compared in
-the committer's own zone, so the two agree. Detection is day-granular: two
-sessions on one day are one boundary.
+Work is tied to a unit by a git trailer: end each commit message with
+`Unit: <name>`, in the same final block as any `Co-Authored-By:` line. Git
+reads only the last paragraph as trailers, so a `Unit:` line followed by a blank
+line and more text is not seen; `attribution: unused` in the block is the tell. The block's last line,
+`next:`, names the one command the current state admits, so nothing has to be
+remembered. Handoffs are optional: if you keep `handoffs/YYYY-MM-DD-<topic>.md`
+files they are counted as session records, in whatever format you already use.
 
 `open` refuses a `run:` condition that already passes; a unit needs a condition
 that is false now. `met` is `close` without `closed_at`: the condition and
@@ -145,17 +148,24 @@ written. The other pieces are written regardless.
 ## What check prints
 
 ```
-intent: present
+intent: present  hooks: configured  history: full
 unit build: open  condition pass  evidence valid  pin unchanged  sessions 4/3  MET-BUT-OPEN  OVER-CEILING
-handoffs: 3  last 2026-09-03-parser.md  unit build
+handoffs: 3  last 2026-09-03-parser.md
 sessions: 4 (clock)  handoffs 3  commit-days 3
+attribution: 5 of 5 commits since last session
 flags: met-but-open(build) over-ceiling(build)
+next: dokime close build --evidence commit:<sha>
 ```
 
 The first line also reports `hooks: configured|absent` and `history: full|shallow`.
 On a shallow clone every pin reads `UNVERIFIABLE (shallow history)` and
 `check --at stop` flags `history-shallow`, since the pin rule cannot run; use
 `fetch-depth: 0` in CI.
+
+`attribution: N of M commits since last session` counts work commits carrying a
+valid `Unit:` trailer; `unused` means no commit in the repo has ever carried one.
+`next:` names the applicable command: open a unit, commit under the open one,
+close the met one, or install the hooks.
 
 `sessions` comes from `.dokime/sessions.log`, which only the SessionStart hook
 appends to. When the hook is not installed it prints `unknown` and the ceiling is

@@ -8,7 +8,9 @@
 
 A session is {"date": "YYYY-MM-DD", "unit": name-or-None, "files": {path: text},
 "open": [{"name", "condition", "ceiling"}]}. Replay per session: tick the clock and
-run the check (session start), open units, commit work, commit the handoff.
+run the check (session start), open units, commit work with a `Unit:` trailer when
+the session names one, commit a handoff. `handoffs SRC DEST` reads a real repo's
+handoff files and takes a `unit:` line from each as that session's unit.
 """
 import json, os, re, subprocess, sys
 
@@ -34,9 +36,9 @@ def dokime(dest, when, *args):
     return sh([sys.executable, DOKIME, *args], dest, when, stdin=payload)
 
 
-def commit(dest, when, msg):
+def commit(dest, when, msg, unit=None):
     sh(["git", "add", "-A"], dest)
-    sh(["git", "commit", "-q", "--allow-empty", "-m", msg], dest, when)
+    sh(["git", "commit", "-q", "--allow-empty", "-m", msg + ("\n\nUnit: %s" % unit if unit else "")], dest, when)
 
 
 def init_repo(dest, date):
@@ -65,10 +67,10 @@ def replay(dest, sessions):
             os.makedirs(os.path.dirname(os.path.join(dest, path)) or dest, exist_ok=True)
             with open(os.path.join(dest, path), "w") as f:
                 f.write(text)
-        commit(dest, d + "T11:00:00+00:00", "work session %d" % (i + 1))
+        commit(dest, d + "T11:00:00+00:00", "work session %d" % (i + 1), s.get("unit"))
         os.makedirs(os.path.join(dest, "handoffs"), exist_ok=True)
         with open(os.path.join(dest, "handoffs", "%s-session-%d.md" % (d, i + 1)), "w") as f:
-            f.write(("unit: %s\n" % s["unit"] if s.get("unit") else "") + "session %d\n" % (i + 1))
+            f.write("session %d\n" % (i + 1))
         commit(dest, d + "T12:00:00+00:00", "handoff session %d" % (i + 1))
     return reports
 

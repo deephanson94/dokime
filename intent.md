@@ -39,7 +39,7 @@ Added by the Phase 0 review:
   commit relates to the unit.
 - No verification of prose done conditions. Only `run:` conditions are executed.
   A prose condition is `unverified` for its whole life. The human verifies it.
-- No visibility into work that produces neither a commit nor a handoff.
+- No visibility into work that produces no commit.
 - No beads backend. Beads has no immutable pinned-condition field, so the pin
   check would degrade to "skip" there, which pulls a second workflow into
   `check`. The spec's own drop condition applies.
@@ -56,7 +56,8 @@ Added by the Phase 0 review:
 2. `dokime check` replays the Phase 4 fixture and flags both incidents:
    incident (a), a unit whose `run:` condition passes at session 2 while sessions
    3 to 6 continue, is flagged `met-but-open` at session 3; incident (b), four
-   sessions with no unit named, is flagged `work-without-unit` at session 2.
+   sessions of commits with no `Unit:` trailer, is flagged `work-without-unit`
+   at session 2.
    Verified by `run: python3 -m unittest discover -s tests -q`.
 3. Adopted in two repositories for two sessions each with no change to dokime's
    code.
@@ -82,8 +83,14 @@ Added by the Phase 0 review:
   as `unknown` and the ceiling is compared against nothing. Handoff files and
   commit days are reported beside it and marked `DIVERGENT` when they disagree.
   The log is gitignored: the clock is per checkout.
-- A `unit:` line in a handoff counts only if the named unit exists and was open on
-  the handoff's date.
+- Every commit that touches work (anything outside the ledger and the governance
+  files) carries the trailer `Unit: <name>`, naming a unit that was open on the
+  commit's date. `check` reports attribution since the previous session start
+  and flags `work-without-unit` while the clock is live. Handoffs are optional
+  session records in whatever form the user already keeps.
+- The status block ends with one `next:` line naming the single command the
+  state admits. It names a command, never a reason, and never appears in the
+  Stop hook's output.
 - Evidence refs: a `commit` is an abbreviated or full SHA (never a symbolic ref),
   reachable from HEAD, dated after `opened_at`, touching at least one non-empty
   file outside `handoffs/` and `units/`. An `artifact` is a path that exists and is
@@ -117,4 +124,10 @@ Recorded so the deviations from the original specification are visible.
    print the earliest commit where it passed and how many followed) and
    `uninstall`.
 7. The `init` interview runs only under `--write=intent`: four questions, draft
-   shown before writing, nothing invented.
+   shown before writing, nothing invented. Without a terminal it writes the four
+   headings with TODO markers and `check` reports `intent: stub`, so a first run
+   is never red for lack of a terminal.
+8. Unit membership comes from a `Unit: <name>` commit trailer, which lives inside
+   the commit object, not from a line in a handoff file. Handoffs are optional and
+   their format is the user's own. `close` without `--evidence` lists the commits
+   that carry the unit's trailer and refuses; evidence stays a human choice.
