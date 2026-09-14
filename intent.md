@@ -61,8 +61,7 @@ Added by the Phase 0 review:
    Verified by `run: python3 -m unittest discover -s tests -q`.
 3. Adopted in two repositories for two sessions each with no change to dokime's
    code.
-4. The whole build fits in 3 sessions. Sessions are counted by dokime's own clock
-   once it exists, and by handoff files before that.
+4. The whole build fits in 3 sessions, counted by dokime's own clock.
 
 ## Invariants
 
@@ -95,7 +94,8 @@ Added by the Phase 0 review:
   reachable from HEAD, dated after `opened_at`, touching at least one non-empty
   file outside `handoffs/` and `units/`. An `artifact` is a path that exists and is
   tracked. A `sha256` is `path:hash` and the hash matches the file's content.
-- All times are UTC.
+- Stored timestamps (`opened_at`, `closed_at`, the clock) are UTC. Commit days are
+  taken in the committer's own zone, the date a person would write for that day.
 - The Stop hook never executes `run:` conditions. By default it prints and exits
   0. Under `--strict` it exits 2 on ledger-integrity rules only (pin, evidence
   refs). It always short-circuits when `stop_hook_active` is set.

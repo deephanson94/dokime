@@ -1,0 +1,11 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": null,
+  "closed_by": null,
+  "done_condition": "run: grep -q \"committer's own zone\" intent.md",
+  "done_condition_sha256": "c5a89f6a9a10725b26ed0c4cea258e29b61a8e114e1c5a920d62d7febf615cfd",
+  "evidence": [],
+  "name": "intent-wording",
+  "opened_at": "2026-09-14T02:40:49+00:00",
+  "status": "open"
+}
