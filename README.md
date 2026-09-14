@@ -268,6 +268,15 @@ python3 tests/fixture.py b /tmp/replay-b         # incident (b), flags at sessio
 python3 tests/fixture.py handoffs path/to/repo/handoffs /tmp/replay   # a real repo
 ```
 
+## Review panel
+
+`.claude/agents/panel-*.md` defines the five reviewers every design change
+goes through: red-teamer, adoption skeptic, minimalist implementer, governance
+theorist, ease-first newcomer. `/panel <topic>` (`.claude/skills/panel/SKILL.md`)
+writes a brief, runs all five in parallel, and synthesizes with dissent recorded.
+They are repository files, so any Claude Code session on any clone has the same
+panel.
+
 ## Claude Code skill
 
 `dokime init --write=skill` (included in `all`) writes
