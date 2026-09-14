@@ -1,0 +1,16 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": "2026-09-13T23:37:01+00:00",
+  "closed_by": "deephanson94",
+  "done_condition": "run: grep -q '^| Command |' README.md",
+  "done_condition_sha256": "46efbd300a9987362bb1852eeaf5c0da71acb36b08b18fae84fd94ecb1bc2ac3",
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "2b117b9"
+    }
+  ],
+  "name": "readme-placement",
+  "opened_at": "2026-09-13T23:36:48+00:00",
+  "status": "closed"
+}
