@@ -134,7 +134,7 @@ class EvidenceTest(RepoCase):
         self.assertIn("symbolic", self.verify("commit", "HEAD"))
         self.assertIn("before unit opened", self.verify("commit", subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD~1"], text=True).strip()))
-        self.assertIn("before unit opened", self.verify("commit", self.head()))  # same second as open
+        self.assertIsNone(self.verify("commit", self.head()))  # same second as open is fine; this commit also carries the test's vendored copy
         write("units/.gitkeep", ""); git("add", "-A"); git("commit", "-qm", "ledger", when="2026-06-01T00:00:00+00:00")
         self.assertIn("outside the ledger", self.verify("commit", self.head()))
         git("commit", "-q", "--allow-empty", "-m", "empty", when="2026-06-01T00:00:01+00:00")
@@ -201,7 +201,9 @@ class CountTest(RepoCase):
         write(dokime.CLOCK, "\n".join(starts) + "\n")
         rep = dokime.run_check("all")
         self.assertEqual(rep["sessions"]["clock"], 3)
-        self.assertTrue(rep["sessions"]["divergent"])  # 3 starts, 0 handoffs
+        self.assertFalse(rep["sessions"]["divergent"])  # no handoffs/ dir: handoffs are not expected
+        os.makedirs("handoffs")
+        self.assertTrue(dokime.run_check("all")["sessions"]["divergent"])  # handoffs in use: 3 starts, 0 handoffs
 
     def test_handoffs_are_session_records_only(self):
         write("handoffs/2026-03-02-x.md", "notes\n")
@@ -330,8 +332,11 @@ class InitTest(RepoCase):
         finally:
             del os.environ["DOKIME_INTERVIEW"]
         self.assertEqual(code, 0)
-        self.assertEqual(set(json.loads(out)["pieces"].values()), {"written"})
+        pieces = json.loads(out)["pieces"]
+        self.assertEqual({k: v for k, v in pieces.items() if k != "handoffs"}, {k: "written" for k in pieces if k != "handoffs"})
+        self.assertTrue(pieces["handoffs"].startswith("optional") and not os.path.exists("handoffs"))
         self.assertIn("## Goals\n- g1\n- g2\n", dokime.read("intent.md"))
+        run("init", "--write=handoffs")
         self.assertNotIn("unit:", dokime.read("handoffs/TEMPLATE.md"))
         self.assertEqual(run("check")[0], 0)
         hooks = json.loads(dokime.read(dokime.SETTINGS))["hooks"]
@@ -341,6 +346,7 @@ class InitTest(RepoCase):
         self.assertIn(".dokime/", dokime.read(".gitignore"))
         code, out, _ = run("init", "--json")
         self.assertEqual(set(json.loads(out)["pieces"].values()), {"present"})
+        shutil.rmtree("handoffs")
 
     def test_interview_declined_writes_nothing(self):
         os.remove("intent.md")
@@ -372,7 +378,7 @@ class InitTest(RepoCase):
     def test_uninstall_keeps_records_and_foreign_config(self):
         write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
         write("CLAUDE.md", "# mine\n")
-        run("init", "--write=all")
+        run("init", "--write=all,handoffs")
         self.start()
         code, out, _ = run("uninstall")
         self.assertEqual(code, 0)
@@ -461,7 +467,7 @@ class RegressionTest(RepoCase):
         opened = self.open_at("u", "2026-03-01T00:00:00+00:00")
         os.environ["DOKIME_NOW"] = "2026-03-01T09:00:00+00:00"; self.start()
         rep = dokime.run_check("all")
-        self.assertEqual(rep["attribution"], "unused")
+        self.assertEqual(rep["attribution"], "0 of 0 commits since last session")
         self.assertEqual(rep["flags"], [])                                  # governance-only commits are not work
         self.work_commit("a.txt", when="2026-03-01T10:00:00+00:00", unit="u")
         self.work_commit("b.txt", when="2026-03-01T11:00:00+00:00")
@@ -476,6 +482,7 @@ class RegressionTest(RepoCase):
         self.assertIn("work-without-unit(2 commits)", dokime.run_check("all")["flags"])  # window spans the previous session
         os.environ["DOKIME_NOW"] = "2026-03-03T09:00:00+00:00"; self.start()
         self.assertEqual(dokime.run_check("all")["attribution"], "0 of 0 commits since last session")
+        self.assertFalse(dokime.run_check("all")["sessions"]["divergent"])   # no handoffs/ dir: handoffs are not expected
 
     def test_trailer_must_name_a_unit_open_on_that_day(self):
         self.open_at("u", "2026-03-01T00:00:00+00:00")
@@ -486,7 +493,7 @@ class RegressionTest(RepoCase):
         self.work_commit("b.txt", when="2026-03-02T11:00:00+00:00", unit="u")   # same day as close: still valid
         self.work_commit("c.txt", when="2026-03-03T11:00:00+00:00", unit="u")   # after close: not
         os.environ["DOKIME_NOW"] = "2026-03-03T12:00:00+00:00"; self.start()
-        self.assertIn("work-without-unit(1 commits)", dokime.run_check("all")["flags"])
+        self.assertIn("work-without-unit(1 commit)", dokime.run_check("all")["flags"])
 
     def test_close_without_evidence_lists_trailer_commits(self):
         self.open_at("u", "2026-03-01T00:00:00+00:00")
@@ -502,9 +509,38 @@ class RegressionTest(RepoCase):
         self.start()
         self.assertIn("trailer 'Unit: u'", dokime.run_check("all")["next"])
         write("ok", "")
-        self.assertEqual(dokime.run_check("all")["next"], "dokime close u --evidence commit:<sha>")
+        self.assertTrue(dokime.run_check("all")["next"].startswith("dokime close u"))
         self.assertNotIn("next", dokime.run_check("stop"))
         self.assertIn("\nnext: ", dokime.render(dokime.run_check("all")))
+
+    def test_offsets_do_not_move_the_window_or_the_candidates(self):
+        self.open_at("u", "2026-03-01T03:00:00+00:00")
+        os.environ["DOKIME_NOW"] = "2026-03-01T04:00:00+00:00"; self.start()
+        early = self.work_commit("a.txt", when="2026-03-01T09:00:00+08:00", unit="u")   # 01:00Z: before open and tick
+        self.work_commit("b.txt", when="2026-03-01T00:00:00-07:00")                     # 07:00Z: after tick, no trailer
+        rep = dokime.run_check("all")
+        self.assertEqual(rep["attribution"], "0 of 1 commits since last session")
+        self.assertIn("work-without-unit(1 commit)", rep["flags"])
+        code, _, err = run("close", "u")
+        self.assertEqual((code, early in err), (1, False))                            # not offered: it predates open
+
+    def test_no_clock_window_falls_back_to_the_open_unit(self):
+        self.open_at("u", "2026-03-01T00:00:00+00:00")
+        self.work_commit("a.txt", when="2026-03-02T00:00:00+00:00")
+        rep = dokime.run_check("all")
+        self.assertEqual(rep["attribution"], "0 of 2 commits since unit opened")   # the open commit carries the test's vendored copy
+        self.assertIn("work-without-unit(2 commits)", rep["flags"])
+        self.assertEqual(rep["units"][0]["evidence"], "none")
+
+    def test_session_start_survives_a_broken_ledger(self):
+        write("units/bad.json", "{not json")
+        sys.stdin = io.StringIO('{"source": "startup"}')
+        code, out, _ = run("session-start")
+        self.assertEqual((code, out.startswith("dokime: units/bad.json"), "next: fix the ledger" in out), (0, True, True))
+
+    def test_next_when_intent_missing(self):
+        os.remove("intent.md")
+        self.assertEqual(dokime.run_check("all")["next"], "dokime init --write=intent")
 
     def test_intent_stub(self):
         os.remove("intent.md")
@@ -589,20 +625,14 @@ class RegressionTest(RepoCase):
         rep = dokime.run_check("all")
         self.assertEqual((rep["hooks"], "clock-absent" in rep["flags"]), ("absent", True))
         self.assertNotIn("clock-absent", dokime.run_check("stop")["flags"])
-        run("init", "--write=hooks")                       # hooks configured but never fired: still no clock
-        self.assertIn("clock-absent", dokime.run_check("all")["flags"])
+        run("init", "--write=hooks")                       # hooks configured, first session not started: not a flag
+        rep = dokime.run_check("all")
+        self.assertNotIn("clock-absent", rep["flags"])
+        self.assertIn("start a Claude Code session", rep["next"])
         os.remove(dokime.SETTINGS)
         self.start()                                       # a clock with no repo hook (user-level hooks): not flagged
         self.assertNotIn("clock-absent", dokime.run_check("all")["flags"])
-        shutil.rmtree(".dokime"); run("init", "--write=hooks")
-        self.start()
-        rep = dokime.run_check("all")
-        self.assertEqual((rep["hooks"], "clock-absent" in rep["flags"]), ("configured", False))
-        write(dokime.SETTINGS, '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "true # dokime"}]}]}}')
-        self.assertNotIn("clock-absent", dokime.run_check("all")["flags"])  # clock ticked: the config is not the test
-        shutil.rmtree(".dokime")
-        self.assertIn("clock-absent", dokime.run_check("all")["flags"])     # decorative hook, no clock: flagged
-        self.assertIn("hooks: configured", dokime.render(dokime.run_check("all")))
+        self.assertIn("hooks: absent", dokime.render(dokime.run_check("all")))
 
     def test_shallow_history_is_named(self):
         self.open_at("u", "2026-03-01T00:00:00+00:00")

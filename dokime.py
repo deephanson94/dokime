@@ -69,11 +69,10 @@ def run_condition(cond, timeout=120):
     if not cond.startswith("run:") or os.environ.get("DOKIME_NESTED"):
         return "unverified"
     try:
-        p = subprocess.run(cond[4:].strip(), shell=True, timeout=timeout, capture_output=True,
-                           text=True, env=dict(os.environ, DOKIME_NESTED="1"))
+        p = subprocess.run(cond[4:].strip(), shell=True, timeout=timeout, capture_output=True, text=True, env=dict(os.environ, DOKIME_NESTED="1"))
+        return "pass" if p.returncode == 0 else "fail"
     except subprocess.TimeoutExpired:
         return "fail"
-    return "pass" if p.returncode == 0 else "fail"
 
 
 # ----------------------------------------------------------------- ledger
@@ -173,7 +172,7 @@ def verify_commit(ref, opened_at):
         return "no such commit"
     if git("merge-base", "--is-ancestor", full, "HEAD") is None:
         return "not reachable from HEAD"
-    if int(git("show", "-s", "--format=%ct", full) or 0) <= parse_ts(opened_at).timestamp():
+    if int(git("show", "-s", "--format=%ct", full) or 0) < parse_ts(opened_at).timestamp():
         return "committed before unit opened"
     files = (git("show", "--name-only", "--format=", full) or "").splitlines()
     for f in files:
@@ -241,7 +240,7 @@ def finish(a, status):
         raise DokimeError("unit already closed: " + a.name)
     evidence = d["evidence"] + parse_evidence(a.evidence)
     if not evidence:
-        named = [c["sha"][:7] for c in commits() if c["unit"] == a.name and c["ts"] > d["opened_at"]]
+        named = [c["sha"][:7] for c in commits() if c["unit"] == a.name and parse_ts(c["ts"]) > parse_ts(d["opened_at"])]
         raise DokimeError("refusing to set %s without evidence; commits carrying 'Unit: %s': %s" % (
             status, a.name, " ".join(named) or "none"))
     problems = []
@@ -268,11 +267,9 @@ def finish(a, status):
 
 def cmd_list(a):
     units = all_units()
-    lines = ["%-24s %-7s %3s  %-9s %2d ev  %s" % (
-        u["name"], u["status"], u["ceiling_sessions"],
-        "run" if u["done_condition"].startswith("run:") else "prose", len(u["evidence"]),
-        u["opened_at"][:10]) for u in units]
-    return {"units": units}, "\n".join(lines) if lines else "no units"
+    lines = ["%-24s %-7s %3s  %-9s %2d ev  %s" % (u["name"], u["status"], u["ceiling_sessions"],
+             "run" if u["done_condition"].startswith("run:") else "prose", len(u["evidence"]), u["opened_at"][:10]) for u in units]
+    return {"units": units}, "\n".join(lines) or "no units"
 
 
 # ------------------------------------------------------------------ check
@@ -325,7 +322,7 @@ def check_unit(u, at, starts, hs, cs):
     live = u["status"] != "closed"
     r["condition"] = run_condition(u["done_condition"]) if live and at != "stop" else "unverified"
     bad = [ev for ev in u["evidence"] if live and verify_evidence(ev, u["opened_at"])]
-    r["evidence"] = "valid" if not bad else "invalid"
+    r["evidence"] = "invalid" if bad else "valid" if u["evidence"] else "none"
     r["pin"] = pin_status(u)
     r["forced"] = u.get("force_reason")
     if r["pin"].startswith("CHANGED"):
@@ -355,7 +352,7 @@ def run_check(at="all"):
         rep["flags"].append("intent-" + rep["intent"])
     if at == "stop" and rep["history"] == "shallow" and units:
         rep["flags"].append("history-shallow")
-    if at != "stop" and starts is None and any(u["status"] != "closed" for u in units):
+    if at != "stop" and starts is None and rep["hooks"] == "absent" and any(u["status"] != "closed" for u in units):
         rep["flags"].append("clock-absent")
     ever = (git("log", "--diff-filter=A", "--format=", "--name-only", "--", UNITS) or "").split()
     for path in sorted(set(ever)):
@@ -370,20 +367,22 @@ def run_check(at="all"):
         since = utc_date(starts[0]) if starts else ""
         n_days, n_hs = len(set(c["date"] for c in cs if c["date"] >= since)), sum(1 for h in hs if h[0] >= since)
         rep["sessions"] = {"clock": None if starts is None else len(starts), "handoffs": len(hs),
-                           "commit_days": len(set(c["date"] for c in cs)),
-                           "divergent": bool(starts) and (n_hs < len(starts) - 1 or n_days > len(starts))}
-        # attribution: since the previous session start, every work commit names a unit open on its date
-        window = [c for c in cs if starts and c["ts"] > (starts[-2] if len(starts) > 1 else starts[0])]
+                           "commit_days": len(set(c["date"] for c in cs)), "divergent": bool(starts) and (
+                               (os.path.isdir(HANDOFFS) and n_hs < len(starts) - 1) or n_days > len(starts))}
+        # attribution: since the previous session start (or the earliest live unit), every work commit names an open unit
+        live = [u for u in units if u["status"] != "closed"]
+        edge = (starts[-2] if len(starts) > 1 else starts[0]) if starts else min((u["opened_at"] for u in live), default=None)
+        window = [c for c in cs if edge and parse_ts(c["ts"]) >= parse_ts(edge)]
         bad = [c for c in window if not (c["unit"] and unit_open_on(units, c["unit"], c["date"]))]
-        rep["attribution"] = "unused" if not any(c["unit"] for c in cs) else "%d of %d commits since last session" % (
-            len(window) - len(bad), len(window))
+        rep["attribution"] = "%d of %d commits since %s" % (len(window) - len(bad), len(window), "last session" if starts else "unit opened") if edge else "unavailable (no clock, no open unit)"
         if bad:
-            rep["flags"].append("work-without-unit(%d commits)" % len(bad))
-        live = [r for r in rep["units"] if r["status"] != "closed"]
-        met = [r for r in live if r["condition"] == "pass"]
-        rep["next"] = ('dokime open <name> --condition "run: <a command that fails now>"' if not live else
-                       "dokime close %s --evidence commit:<sha>" % met[0]["name"] if met else
+            rep["flags"].append("work-without-unit(%d commit%s)" % (len(bad), "s"[len(bad) == 1:]))
+        met = [u["name"] for u, r in zip(units, rep["units"]) if r["status"] != "closed" and r["condition"] == "pass"]
+        rep["next"] = ("dokime init --write=intent" if rep["intent"] not in ("present", "stub") else
+                       'dokime open <name> --condition "run: <a command that fails now>"' if not live else
+                       "dokime close %s   (it lists the commits carrying the unit's trailer)" % met[0] if met else
                        "dokime init --write=hooks" if "clock-absent" in rep["flags"] else
+                       "start a Claude Code session; its hook ticks the clock" if starts is None else
                        "commit work under unit %s with the trailer 'Unit: %s'" % (live[0]["name"], live[0]["name"]))
     rep["ok"] = not rep["flags"]
     return rep
@@ -400,9 +399,9 @@ def render(rep):
     if "sessions" in rep:
         h, s = rep["handoffs"], rep["sessions"]
         L.append("handoffs: %d  last %s" % (h["count"], h["last"] or "-"))
-        L.append("sessions: %s (clock)  handoffs %d  commit-days %d%s" % (
-            "unknown" if s["clock"] is None else s["clock"], s["handoffs"], s["commit_days"],
-            "  DIVERGENT" if s["divergent"] else ""))
+        L.append("sessions: %s (clock%s)  handoffs %d  commit-days %d%s" % (
+            "unknown" if s["clock"] is None else s["clock"], ", ticked" if rep.get("ticked") else "", s["handoffs"],
+            s["commit_days"], "  DIVERGENT" if s["divergent"] else ""))
         L.append("attribution: " + rep["attribution"])
     L.append("flags: " + (" ".join(rep["flags"]) or "none"))
     if "next" in rep:
@@ -450,10 +449,12 @@ def cmd_session_start(a):
         os.makedirs(os.path.dirname(CLOCK), exist_ok=True)
         with open(CLOCK, "a") as f:
             f.write("%s %s\n" % (now(), git("rev-parse", "--short", "HEAD") or "-"))
-    rep = run_check("all")
+    try:
+        rep = run_check("all")
+    except DokimeError as ex:  # the block must reach the agent: SessionStart shows stdout only on exit 0
+        return {"error": str(ex), "ticked": tick}, "dokime: %s\nnext: fix the ledger, then dokime check" % ex
     rep["ticked"] = tick
-    full = tick or source == "compact" or rep["flags"]
-    return rep, render(rep) + ("  ticked" if tick else "") if full else status_line(rep)
+    return rep, render(rep) if tick or source == "compact" or rep["flags"] else status_line(rep)
 
 
 def cmd_stop_hook(a):
@@ -531,7 +532,8 @@ def planned_writes():
     st = intent_status()
     plan["intent"] = (INTENT, None if st in ("present", "stub") else "<interview>", st)
     for piece, d, fn, body in (("units", UNITS, ".gitkeep", ""), ("handoffs", HANDOFFS, "TEMPLATE.md", HANDOFF_TEMPLATE)):
-        plan[piece] = (os.path.join(d, fn), None if os.path.isdir(d) else body, "present" if os.path.isdir(d) else "missing")
+        plan[piece] = (os.path.join(d, fn), None if os.path.isdir(d) else body,
+                       "present" if os.path.isdir(d) else "missing" if piece == "units" else "optional (not part of all)")
     try:
         cur = json.loads(read(SETTINGS)) if os.path.exists(SETTINGS) else {}
     except ValueError as ex:
@@ -555,7 +557,7 @@ def planned_writes():
 
 
 def cmd_init(a):
-    want = PIECES if a.write == "all" else tuple(a.write.split(",")) if a.write else ()
+    want = tuple(p for x in (a.write or "").split(",") if x for p in ([q for q in PIECES if q != "handoffs"] if x == "all" else [x]))
     if set(want) - set(PIECES):
         raise DokimeError("unknown piece in --write; choose from " + ",".join(PIECES))
     plan, report, lines = planned_writes(), {}, []
@@ -638,8 +640,7 @@ def cmd_scan(a):
     passing = [s for s, r in results if r == "pass"]
     if not passing:
         return {"earliest_pass": None, "checked": len(results)}, "HEAD: %s  earliest passing: none in %d commit(s)" % (results[0][1] if results else "no commits", len(results))
-    first = passing[-1]
-    when = git("show", "-s", "--format=%cI", first)
+    first, when = passing[-1], git("show", "-s", "--format=%cI", passing[-1])
     return {"earliest_pass": first, "date": when, "commits_after": len(passing) - 1, "checked": len(results)}, \
         "earliest passing: %s %s  commits after it: %d  (checked %d of last %d)" % (first[:10], when, len(passing) - 1, len(results), a.limit)
 
