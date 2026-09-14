@@ -423,6 +423,7 @@ class InitTest(RepoCase):
         write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
         write("CLAUDE.md", "# mine\n")
         run("init", "--write=all,handoffs")
+        write(".claude/skills/mine/SKILL.md", "---\nname: mine\n---\n")
         self.start()
         code, out, _ = run("uninstall")
         self.assertEqual(code, 0)
@@ -431,6 +432,8 @@ class InitTest(RepoCase):
         self.assertTrue(os.path.exists(".dokime"))
         self.assertNotIn(".dokime/", dokime.read(".gitignore"))
         self.assertTrue(os.path.isdir("units") and os.path.isdir("handoffs") and os.path.exists("intent.md"))
+        self.assertFalse(os.path.exists(os.path.dirname(dokime.SKILL)))              # the skill init wrote is gone
+        self.assertTrue(os.path.isdir(".claude/skills/mine"))                       # a neighbouring skill is not
         write(dokime.SETTINGS, '{"a": [1,2]}')
         run("uninstall")
         self.assertEqual(dokime.read(dokime.SETTINGS), '{"a": [1,2]}')

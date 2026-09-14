@@ -101,8 +101,9 @@ Added by the Phase 0 review:
   refs). It always short-circuits when `stop_hook_active` is set.
 - The only unconditional gate is `dokime close`.
 - `init` writes nothing without `--write`. `uninstall` removes the hooks, the
-  CLAUDE.md block and the `.gitignore` line, and keeps every record: `intent.md`,
-  `units/`, `handoffs/`, `.dokime/`. It never rewrites a file it changes nothing in.
+  CLAUDE.md block, the `.gitignore` line and the `dokime` skill directory, and
+  keeps every record: `intent.md`, `units/`, `handoffs/`, `.dokime/`. It never
+  rewrites a file it changes nothing in.
 - Under 600 lines of code excluding tests. No dependencies.
 
 ## Decisions

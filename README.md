@@ -115,9 +115,9 @@ After each commit the PostToolUse hook re-checks and speaks only when something
 is flagged, so a commit that forgot its trailer is named at once, not at the
 next session. dokime records and reports; it does not stop the agent.
 
-`dokime uninstall` removes the hooks, the CLAUDE.md block and the `.gitignore`
-line, and keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`. It also leaves
-`.claude/skills/dokime/`; delete that directory by hand.
+`dokime uninstall` removes the hooks, the CLAUDE.md block, the `.gitignore`
+line and `.claude/skills/dokime/` (only when its SKILL.md is dokime's own), and
+keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`.
 
 ## Use
 
@@ -130,7 +130,7 @@ dokime status                    # one line
 dokime close build               # refuses, and lists the commits carrying 'Unit: build'
 dokime close build --evidence commit:<one of them>
 dokime scan --condition "run: pytest -q"   # earliest recent commit where it passed
-dokime uninstall                 # remove hooks, the CLAUDE.md block and the .gitignore line
+dokime uninstall                 # remove hooks, the CLAUDE.md block, the .gitignore line and the skill
 ```
 
 Every command takes `--json`.

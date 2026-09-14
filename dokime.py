@@ -609,6 +609,9 @@ def cmd_uninstall(a):
     if os.path.exists(GITIGNORE) and ".dokime/" in read(GITIGNORE).splitlines():
         write(GITIGNORE, "".join(ln + "\n" for ln in read(GITIGNORE).splitlines() if ln != ".dokime/"))
         removed.append(".gitignore line")
+    if os.path.exists(SKILL) and read(SKILL).startswith("---\nname: dokime\n"):  # only dokime's own skill, never a neighbour
+        shutil.rmtree(os.path.dirname(SKILL))
+        removed.append("skill " + os.path.dirname(SKILL))
     return {"removed": removed}, "removed: " + (", ".join(removed) or "nothing") + "\nkept: intent.md, units/, handoffs/, .dokime/ (records; delete by hand)"
 
 
