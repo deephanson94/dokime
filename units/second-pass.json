@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-14T00:59:30+00:00",
+  "closed_by": "deephanson94",
   "done_condition": "run: python3 -m unittest tests.test_dokime.RegressionTest.test_no_clock_window_falls_back_to_the_open_unit tests.test_dokime.InitTest.test_uninstall_keeps_records_and_foreign_config -q",
   "done_condition_sha256": "5ed3d025e40ef4f909aaa572107fe76de847b76de1e5526aaf8f2412b844ef84",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "8c7425a"
+    }
+  ],
   "name": "second-pass",
   "opened_at": "2026-09-14T00:58:14+00:00",
-  "status": "open"
+  "status": "closed"
 }
