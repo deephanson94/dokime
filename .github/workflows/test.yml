@@ -28,7 +28,7 @@ jobs:
       - name: line budget (600 excluding tests)
         run: |
           n=$(grep -cvE '^\s*(#|$)' dokime.py); echo "dokime.py: $n lines"; test "$n" -le 600
-      - name: ledger integrity (blocking; pin, evidence, missing units)
-        run: python dokime.py check --at stop
+      - name: ledger integrity (blocking; pin, evidence, missing units, the same set --strict blocks on)
+        run: python dokime.py stop-hook --strict </dev/null
       - name: full check (informational; CI has no session clock)
-        run: python dokime.py check --warn-only
+        run: python dokime.py check --full || true

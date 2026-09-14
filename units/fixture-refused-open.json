@@ -1,0 +1,16 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": "2026-09-14T14:48:15+00:00",
+  "closed_by": "Claude",
+  "done_condition": "run: python3 -m unittest tests.test_dokime.ReplayTest.test_refused_open_is_an_error -q",
+  "done_condition_sha256": "d15cf24de3322d6b20d28db9f7d53a2ccd72c3831151ca7d28e14124ce41cb19",
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "3376007"
+    }
+  ],
+  "name": "fixture-refused-open",
+  "opened_at": "2026-09-14T14:41:02+00:00",
+  "status": "closed"
+}

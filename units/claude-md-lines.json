@@ -1,0 +1,16 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": "2026-09-14T15:29:19+00:00",
+  "closed_by": "Claude",
+  "done_condition": "run: python3 -m unittest tests.test_dokime.InitTest.test_claude_md_block_and_open_hint -q",
+  "done_condition_sha256": "7c991dd680c988075b8c83989ca520068706741c8ef5dca6f9c62da8ace17788",
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "407659a"
+    }
+  ],
+  "name": "claude-md-lines",
+  "opened_at": "2026-09-14T15:27:19+00:00",
+  "status": "closed"
+}

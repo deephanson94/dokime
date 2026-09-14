@@ -1,0 +1,16 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": "2026-09-14T15:37:43+00:00",
+  "closed_by": "Claude",
+  "done_condition": "run: ! grep -q 'close build --evidence commit:<sha>' README.md",
+  "done_condition_sha256": "0961610063123593b659729c95885adcc876378ae457402023a2a3cd90895dbf",
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "f610c2b"
+    }
+  ],
+  "name": "readme-pilot",
+  "opened_at": "2026-09-14T15:37:21+00:00",
+  "status": "closed"
+}

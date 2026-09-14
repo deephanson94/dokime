@@ -32,8 +32,12 @@ def sh(args, cwd, when=None, stdin=None):
 
 
 def dokime(dest, when, *args):
+    """Run a dokime command. Only check and session-start may exit non-zero (a flag); anything else raising is a broken replay."""
     payload = '{"source": "startup"}' if args[0] == "session-start" else None
-    return sh([sys.executable, DOKIME, *args], dest, when, stdin=payload)
+    p = sh([sys.executable, DOKIME, *args], dest, when, stdin=payload)
+    if p.returncode and args[0] not in ("check", "session-start"):
+        raise RuntimeError("%s: %s" % (" ".join(args[:2]), p.stderr.strip() or p.stdout.strip()))
+    return p
 
 
 def commit(dest, when, msg, unit=None):
