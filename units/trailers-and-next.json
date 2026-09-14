@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-14T00:38:59+00:00",
+  "closed_by": "deephanson94",
   "done_condition": "run: python3 dokime.py check | grep -q '^next:'",
   "done_condition_sha256": "769b7b79656ffb5e446bb9d84a948803d11f008f78df27b1303795dd1a91ada8",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "2a0d7b0"
+    }
+  ],
   "name": "trailers-and-next",
   "opened_at": "2026-09-14T00:30:54+00:00",
-  "status": "open"
+  "status": "closed"
 }
