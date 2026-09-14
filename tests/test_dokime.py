@@ -271,6 +271,45 @@ class CheckTest(RepoCase):
         sys.stdin = sys.__stdin__
 
 
+class PostToolTest(RepoCase):
+    def post(self, payload='{"tool_name": "Bash", "tool_input": {"command": "git commit -m x"}}'):
+        sys.stdin = io.StringIO(payload)
+        code, out, err = run("post-tool")
+        sys.stdin = io.StringIO("")
+        self.assertEqual((code, err), (0, ""))
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+    def test_silent_unless_head_moved_and_flagged(self):
+        self.assertEqual(self.post(), "")                            # first run caches HEAD; clean repo says nothing
+        self.assertEqual(dokime.read(".dokime/head").strip(), subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip())
+        run("open", "u", "--condition", "run: test -f w.txt")
+        self.start()
+        self.work_commit("w.txt", when="2027-01-01T00:00:00+00:00")   # work after the tick, no trailer: HEAD moved, flagged
+        out = self.post()
+        self.assertIn("work-without-unit(1 commit)", out)
+        self.assertNotIn("next:", out)                                # never on this channel
+        self.assertIn("condition unverified", out)                    # run: conditions are not executed here
+        self.assertNotIn("git commit", out)                           # tool_input is never echoed
+        self.assertEqual(self.post(), "")                             # same HEAD: silent even though still flagged
+        self.assertEqual(self.post(""), "")                           # no payload: HEAD gate only
+        self.assertNotIn("met-but-open", dokime.run_check("tool")["flags"])
+        self.assertIn("met-but-open(u)", dokime.run_check("all")["flags"])
+
+    def test_skill_always_reports_a_status_line(self):
+        self.post()
+        out = self.post('{"tool_name": "Skill", "tool_input": {"skill": "handoff"}}')
+        self.assertTrue(out.startswith("dokime: ok | intent present"), out)
+        run("open", "u", "--condition", "x")
+        d = dokime.load_unit("u"); d["done_condition"] = "y"; dokime.save_unit(d)
+        out = self.post('{"tool_name": "Skill", "tool_input": {"skill": "handoff"}}')
+        self.assertIn("PIN-CHANGED", out)
+        self.assertNotIn("next:", out)
+
+    def test_broken_ledger_reaches_the_agent(self):
+        write("units/u.json", "{")
+        self.assertIn("units/u.json: invalid JSON", self.post())
+
+
 class ReplayTest(unittest.TestCase):
     def flags(self, sessions):
         tmp = tempfile.mkdtemp()
@@ -340,8 +379,13 @@ class InitTest(RepoCase):
         self.assertNotIn("unit:", dokime.read("handoffs/TEMPLATE.md"))
         self.assertEqual(run("check")[0], 0)
         hooks = json.loads(dokime.read(dokime.SETTINGS))["hooks"]
-        self.assertEqual(set(hooks), {"SessionStart", "Stop"})
+        self.assertEqual(set(hooks), {"SessionStart", "Stop", "PostToolUse"})
         self.assertEqual(hooks["SessionStart"][0]["hooks"][0]["command"], 'python3 "$CLAUDE_PROJECT_DIR/tools-dokime.py" session-start')
+        self.assertEqual((hooks["PostToolUse"][0]["matcher"], hooks["PostToolUse"][0]["hooks"][0]["command"]),
+                         ("Bash|Skill", 'python3 "$CLAUDE_PROJECT_DIR/tools-dokime.py" post-tool'))
+        skill = dokime.read(dokime.SKILL)
+        self.assertTrue(skill.startswith("---\nname: dokime\n"), skill)
+        self.assertIn("Run `python3 tools-dokime.py check`", skill)            # the skill runs the vendored copy, not $CLAUDE_PROJECT_DIR
         self.assertIn(dokime.MARK, dokime.read("CLAUDE.md"))
         self.assertIn(".dokime/", dokime.read(".gitignore"))
         code, out, _ = run("init", "--json")
@@ -367,7 +411,7 @@ class InitTest(RepoCase):
         write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
         run("init", "--write=hooks")
         s = json.loads(dokime.read(dokime.SETTINGS))
-        self.assertEqual((s["permissions"], set(s["hooks"])), ({"allow": ["Bash"]}, {"SessionStart", "Stop"}))
+        self.assertEqual((s["permissions"], set(s["hooks"])), ({"allow": ["Bash"]}, {"SessionStart", "Stop", "PostToolUse"}))
         self.assertEqual(run("init", "--write=bogus")[0], 1)
         os.remove(dokime.SETTINGS)
         dokime.__file__ = self.real_file  # outside the repo and not on PATH
@@ -379,6 +423,7 @@ class InitTest(RepoCase):
         write(dokime.SETTINGS, '{"permissions": {"allow": ["Bash"]}}')
         write("CLAUDE.md", "# mine\n")
         run("init", "--write=all,handoffs")
+        write(".claude/skills/mine/SKILL.md", "---\nname: mine\n---\n")
         self.start()
         code, out, _ = run("uninstall")
         self.assertEqual(code, 0)
@@ -387,6 +432,8 @@ class InitTest(RepoCase):
         self.assertTrue(os.path.exists(".dokime"))
         self.assertNotIn(".dokime/", dokime.read(".gitignore"))
         self.assertTrue(os.path.isdir("units") and os.path.isdir("handoffs") and os.path.exists("intent.md"))
+        self.assertFalse(os.path.exists(os.path.dirname(dokime.SKILL)))              # the skill init wrote is gone
+        self.assertTrue(os.path.isdir(".claude/skills/mine"))                       # a neighbouring skill is not
         write(dokime.SETTINGS, '{"a": [1,2]}')
         run("uninstall")
         self.assertEqual(dokime.read(dokime.SETTINGS), '{"a": [1,2]}')
@@ -613,7 +660,7 @@ class RegressionTest(RepoCase):
         sys.stdin = sys.__stdin__
 
     def test_every_command_has_json(self):
-        for argv in (("list",), ("status",), ("session-start",), ("init",), ("uninstall",), ("check",)):
+        for argv in (("list",), ("status",), ("session-start",), ("post-tool",), ("init",), ("uninstall",), ("check",)):
             code, out, _ = run(*argv, "--json")
             self.assertEqual(code, 0, argv)
             json.loads(out)

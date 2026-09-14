@@ -89,20 +89,23 @@ Added by the Phase 0 review:
   session records in whatever form the user already keeps.
 - The status block ends with one `next:` line naming the single command the
   state admits. It names a command, never a reason, and never appears in the
-  Stop hook's output.
+  output of the mid-session hooks (Stop, PostToolUse).
 - Evidence refs: a `commit` is an abbreviated or full SHA (never a symbolic ref),
   reachable from HEAD, dated after `opened_at`, touching at least one non-empty
   file outside `handoffs/` and `units/`. An `artifact` is a path that exists and is
   tracked. A `sha256` is `path:hash` and the hash matches the file's content.
 - Stored timestamps (`opened_at`, `closed_at`, the clock) are UTC. Commit days are
   taken in the committer's own zone, the date a person would write for that day.
-- The Stop hook never executes `run:` conditions. By default it prints and exits
-  0. Under `--strict` it exits 2 on ledger-integrity rules only (pin, evidence
-  refs). It always short-circuits when `stop_hook_active` is set.
+- The mid-session hooks (Stop, PostToolUse) never execute `run:` conditions.
+  The Stop hook by default prints and exits 0; under `--strict` it exits 2 on
+  ledger-integrity rules only (pin, evidence refs), and it always short-circuits
+  when `stop_hook_active` is set. The PostToolUse hook cannot block, speaks only
+  after HEAD moved or a skill loaded, and never echoes the tool's input.
 - The only unconditional gate is `dokime close`.
 - `init` writes nothing without `--write`. `uninstall` removes the hooks, the
-  CLAUDE.md block and the `.gitignore` line, and keeps every record: `intent.md`,
-  `units/`, `handoffs/`, `.dokime/`. It never rewrites a file it changes nothing in.
+  CLAUDE.md block, the `.gitignore` line and the `dokime` skill directory, and
+  keeps every record: `intent.md`, `units/`, `handoffs/`, `.dokime/`. It never
+  rewrites a file it changes nothing in.
 - Under 600 lines of code excluding tests. No dependencies.
 
 ## Decisions
@@ -131,3 +134,8 @@ Recorded so the deviations from the original specification are visible.
    the commit object, not from a line in a handoff file. Handoffs are optional and
    their format is the user's own. `close` without `--evidence` lists the commits
    that carry the unit's trailer and refuses; evidence stays a human choice.
+9. A PostToolUse hook (`dokime post-tool`, matcher `Bash|Skill`) is the channel an
+   agent sees mid-session: silent unless HEAD moved or a skill loaded, then the
+   status block only when flagged, through `additionalContext`. It is on by
+   default because it is silent when clean. `init --write=skill` writes the
+   `/dokime` skill as the on-demand entry point; there is no TUI.
