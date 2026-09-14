@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-14T06:40:20+00:00",
+  "closed_by": "Claude",
   "done_condition": "run: grep -q \"mid-session hooks\" intent.md && grep -q \"^9\\. \" intent.md",
   "done_condition_sha256": "0fad4d08b25558c82c48f3360cfa83357762dcea04ba7958b645badf7ad62bb2",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "9e46ba9d72110fc94e24a16b41a63c90952b4ae6"
+    }
+  ],
   "name": "intent-hooks-wording",
   "opened_at": "2026-09-14T06:40:03+00:00",
-  "status": "open"
+  "status": "closed"
 }
