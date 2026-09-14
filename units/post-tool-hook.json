@@ -1,0 +1,11 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": null,
+  "closed_by": null,
+  "done_condition": "run: python3 dokime.py post-tool --help >/dev/null 2>&1",
+  "done_condition_sha256": "71c780671576f2a691718db0650b7bf34695731edc4a0a42b371150ac53cf39e",
+  "evidence": [],
+  "name": "post-tool-hook",
+  "opened_at": "2026-09-14T05:38:57+00:00",
+  "status": "open"
+}
