@@ -332,6 +332,18 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual(f[0], [])
         self.assertTrue(all(any(x.startswith("work-without-unit(") for x in s) for s in f[1:]))
 
+    def test_refused_open_is_an_error(self):
+        """A condition that already passes makes `open` refuse; replay must raise, not carry on with no unit."""
+        s = fixture.scenario_a()[:2]
+        s[0]["open"][0]["condition"] = "run: true"
+        tmp = tempfile.mkdtemp()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "open feat.*already passes"):
+                fixture.replay(tmp, s)
+            self.assertEqual(os.listdir(os.path.join(tmp, "units")) if os.path.isdir(os.path.join(tmp, "units")) else [], [])
+        finally:
+            shutil.rmtree(tmp)
+
     def test_from_handoffs_roundtrip(self):
         tmp = tempfile.mkdtemp()
         try:
