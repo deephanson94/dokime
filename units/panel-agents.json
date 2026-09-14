@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-14T14:40:29+00:00",
+  "closed_by": "Claude",
   "done_condition": "run: test -f .claude/skills/panel/SKILL.md && test \"$(ls .claude/agents/panel-*.md | wc -l)\" -eq 5",
   "done_condition_sha256": "5e2e8e9ada2f844b83cdbcb6e31f20aae7d1d5cb2c63d7a78501a938dc486d2c",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "4f4e694b43d9198f058b5a6776fd5f3f5921e4a4"
+    }
+  ],
   "name": "panel-agents",
   "opened_at": "2026-09-14T14:40:13+00:00",
-  "status": "open"
+  "status": "closed"
 }
