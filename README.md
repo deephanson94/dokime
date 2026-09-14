@@ -71,7 +71,9 @@ dokime init                                   # report only: every piece missing
 dokime init --write=units,handoffs,hooks,gitignore
 # intent.md written by hand: four headings that point at README, SPEC and CI
 # rather than restating them; dokime checks only that the headings exist
-# the three working rules went into the repo's process doc, not a new CLAUDE.md
+# the two rules init would put in CLAUDE.md went into the repo's process doc instead;
+# a repo that already keeps docs/handoffs/ sees `handoffs: found docs/handoffs`
+# and --write=handoffs records that path rather than creating handoffs/
 dokime check                                  # exit 0: intent present, no units yet
 git add -A && git commit -m "Adopt dokime"
 ```
@@ -113,16 +115,17 @@ What `init` does to files you already have:
   flags `history-shallow` while a unit is open, because the pin rule cannot run
   there; give CI `fetch-depth: 0`.
 
-The first session: open a unit and commit `units/`, start Claude Code and expect
-the status block in its context with a `next:` line, work and commit with the
-trailer `Unit: <name>`, then close the unit with a work commit as evidence.
+The first session: open a unit (its output names the trailer to use) and commit
+`units/`, start Claude Code and expect the status block in its context with a
+`next:` line, work and commit with the trailer `Unit: <name>`, then close the
+unit with a work commit as evidence.
 After each commit the PostToolUse hook re-checks and speaks only when something
 is flagged, so a commit that forgot its trailer is named at once, not at the
 next session. dokime records and reports; it does not stop the agent.
 
 `dokime uninstall` removes the hooks, the CLAUDE.md block, the `.gitignore`
 line and `.claude/skills/dokime/` (only when its SKILL.md is dokime's own), and
-keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`.
+keeps `intent.md`, `units/`, the handoff directory and `.dokime/`.
 
 ## Use
 
@@ -181,7 +184,7 @@ handoffs: 3  last 2026-09-03-parser.md
 sessions: 4 (clock)  handoffs 3  commit-days 3
 attribution: 5 of 5 commits since last session
 flags: met-but-open(build) over-ceiling(build)
-next: dokime close build --evidence commit:<sha>
+next: dokime close build   (it lists the commits carrying the unit's trailer)
 ```
 
 The first line also reports `hooks: configured|absent` and `history: full|shallow`.
@@ -250,9 +253,13 @@ marked `DIVERGENT` when commits landed on a day with no session, or, only if a
   mid-session actually sees: it does not need to remember to run `dokime`.
 
 **Unit files are code.** A `run:` condition is executed with the shell by
-`check`, `session-start` and `open`, for every unit that is not closed. Review
-`units/*.json` in pull requests as you would a script. Each run is limited to
-120 seconds.
+`check`, `session-start` and `open`, for every unit that is not closed, with the
+session's environment, and the first session start on a fresh clone runs them
+before anyone has read them. Review `units/*.json` in pull requests as you would
+a script. Each run is limited to 120 seconds. If `DOKIME_NESTED` is set in the
+environment (a settings `env` block can do that) no condition runs and `check`
+flags `conditions-disabled` rather than reading every unit as `unverified`
+in silence.
 
 If `settings.json` already has hooks, init prints the snippet and does not merge.
 
@@ -289,6 +296,10 @@ dokime does not:
   attributing every commit thereafter. Attribution is a claim; evidence is
   what `close` checks.
 - Verify a prose done condition. You do.
+- Detect an edit to `intent.md`'s content. It checks that the four headings
+  exist, nothing more; the pin covers a unit's condition, not the agreement.
+- Bound `--ceiling`. The agent that opens a unit picks the ceiling, so
+  `over-ceiling` reports a number the agent chose.
 
 ## Tests and fixture
 
