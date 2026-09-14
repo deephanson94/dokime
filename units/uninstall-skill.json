@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-14T06:25:03+00:00",
+  "closed_by": "Claude",
   "done_condition": "run: python3 -m unittest tests.test_dokime.InitTest.test_uninstall_keeps_records_and_foreign_config -q",
   "done_condition_sha256": "5bad87fa7ed7b421e164f65fe2c30b522bf81468184c53c16cdd7296865159e5",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "1454fd914d4602b189343585bf797229c1f9fbc6"
+    }
+  ],
   "name": "uninstall-skill",
   "opened_at": "2026-09-14T06:24:32+00:00",
-  "status": "open"
+  "status": "closed"
 }
