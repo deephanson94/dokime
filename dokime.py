@@ -36,23 +36,20 @@ def utc_date(iso):
 def git(*args, check=False):
     """Run git; return stdout stripped, or None on failure (unless check)."""
     p = subprocess.run(["git", *args], capture_output=True, text=True)
-    if p.returncode != 0:
-        if check:
-            raise DokimeError("git %s: %s" % (" ".join(args), p.stderr.strip()))
-        return None
-    return p.stdout.strip()
-
-
-def root():
-    top = git("rev-parse", "--show-toplevel")
-    if top is None:
-        raise DokimeError("not inside a git repository")
-    return top
+    if p.returncode and check:
+        raise DokimeError("git %s: %s" % (" ".join(args), p.stderr.strip()))
+    return None if p.returncode else p.stdout.strip()
 
 
 def read(path):
     with open(path, encoding="utf-8", errors="replace") as f:
         return f.read()
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
 
 
 def sha256_text(s):
@@ -91,26 +88,18 @@ def validate_unit(d):
             e.append("wrong type: %s (want %s)" % (k, t.__name__))
     if e:
         return e
-    if not NAME_RE.fullmatch(d["name"]):
-        e.append("bad name %r (letters, digits, . _ -; no spaces or slashes)" % d["name"])
-    if d["status"] not in STATUSES:
-        e.append("bad status: " + d["status"])
-    if d["ceiling_sessions"] < 1:
-        e.append("ceiling_sessions must be >= 1")
-    if not d["done_condition"].strip():
-        e.append("done_condition is empty")
     try:
         parse_ts(d["opened_at"])
     except ValueError:
         e.append("opened_at is not an ISO-8601 timestamp")
-    if not re.fullmatch(r"[0-9a-f]{64}", d["done_condition_sha256"]):
-        e.append("done_condition_sha256 is not a sha256 hex digest")
-    for i, ev in enumerate(d["evidence"]):
-        if not isinstance(ev, dict) or ev.get("kind") not in KINDS or not isinstance(ev.get("ref"), str):
-            e.append("evidence[%d] must be {kind: commit|artifact|sha256, ref: str}" % i)
-    if d["status"] != "open" and not d["evidence"]:
-        e.append("status %s without evidence" % d["status"])
-    return e
+    bad_ev = [i for i, ev in enumerate(d["evidence"]) if not isinstance(ev, dict) or ev.get("kind") not in KINDS or not isinstance(ev.get("ref"), str)]
+    rules = ((not NAME_RE.fullmatch(d["name"]), "bad name %r (letters, digits, . _ -; no spaces or slashes)" % d["name"]),
+             (d["status"] not in STATUSES, "bad status: " + d["status"]), (d["ceiling_sessions"] < 1, "ceiling_sessions must be >= 1"),
+             (not d["done_condition"].strip(), "done_condition is empty"),
+             (not re.fullmatch(r"[0-9a-f]{64}", d["done_condition_sha256"]), "done_condition_sha256 is not a sha256 hex digest"),
+             (bad_ev, "evidence[%s] must be {kind: commit|artifact|sha256, ref: str}" % ",".join(map(str, bad_ev))),
+             (d["status"] != "open" and not d["evidence"], "status %s without evidence" % d["status"]))
+    return e + [msg for bad, msg in rules if bad]
 
 
 def load_unit(name):
@@ -175,12 +164,8 @@ def verify_commit(ref, opened_at):
     if int(git("show", "-s", "--format=%ct", full) or 0) < parse_ts(opened_at).timestamp():
         return "committed before unit opened"
     files = (git("show", "--name-only", "--format=", full) or "").splitlines()
-    for f in files:
-        if f.startswith(LEDGER_DIRS):
-            continue
-        size = git("cat-file", "-s", "%s:%s" % (full, f))
-        if size and int(size) > 0:
-            return None
+    if any(not f.startswith(LEDGER_DIRS) and int(git("cat-file", "-s", "%s:%s" % (full, f)) or 0) > 0 for f in files):
+        return None
     return "touches no non-empty file outside the ledger"
 
 
@@ -243,11 +228,8 @@ def finish(a, status):
         named = [c["sha"][:7] for c in commits() if c["unit"] == a.name and parse_ts(c["ts"]) > parse_ts(d["opened_at"])]
         raise DokimeError("refusing to set %s without evidence; commits carrying 'Unit: %s': %s" % (
             status, a.name, " ".join(named) or "none"))
-    problems = []
-    for ev in evidence:
-        why = verify_evidence(ev, d["opened_at"])
-        if why:
-            problems.append("%s:%s %s" % (ev["kind"], ev["ref"], why))
+    whys = [(ev, verify_evidence(ev, d["opened_at"])) for ev in evidence]
+    problems = ["%s:%s %s" % (ev["kind"], ev["ref"], why) for ev, why in whys if why]
     result = run_condition(d["done_condition"])
     if result == "fail":
         problems.append("done_condition failed: " + d["done_condition"])
@@ -320,7 +302,7 @@ def unit_open_on(units, name, date):
 def check_unit(u, at, starts, hs, cs):
     r = {"name": u["name"], "status": u["status"], "flags": []}
     live = u["status"] != "closed"
-    r["condition"] = run_condition(u["done_condition"]) if live and at != "stop" else "unverified"
+    r["condition"] = run_condition(u["done_condition"]) if live and at == "all" else "unverified"
     bad = [ev for ev in u["evidence"] if live and verify_evidence(ev, u["opened_at"])]
     r["evidence"] = "invalid" if bad else "valid" if u["evidence"] else "none"
     r["pin"] = pin_status(u)
@@ -377,6 +359,7 @@ def run_check(at="all"):
         rep["attribution"] = "%d of %d commits since %s" % (len(window) - len(bad), len(window), "last session" if starts else "unit opened") if edge else "unavailable (no clock, no open unit)"
         if bad:
             rep["flags"].append("work-without-unit(%d commit%s)" % (len(bad), "s"[len(bad) == 1:]))
+    if at == "all":  # next: needs the conditions; the mid-session hooks never run them and never print it
         met = [u["name"] for u, r in zip(units, rep["units"]) if r["status"] != "closed" and r["condition"] == "pass"]
         rep["next"] = ("dokime init --write=intent" if rep["intent"] not in ("present", "stub") else
                        'dokime open <name> --condition "run: <a command that fails now>"' if not live else
@@ -435,9 +418,9 @@ def hook_payload():
     """JSON object a hook receives on stdin; {} for a tty or bad input."""
     try:
         d = {} if sys.stdin.isatty() else json.load(sys.stdin)
-        return d if isinstance(d, dict) else {}
     except (ValueError, OSError):
-        return {}
+        d = None
+    return d if isinstance(d, dict) else {}
 
 
 def cmd_session_start(a):
@@ -446,9 +429,7 @@ def cmd_session_start(a):
     stale = not starts or parse_ts(now()) - parse_ts(starts[-1]) > datetime.timedelta(hours=8)
     tick = source in ("startup", "clear") or (source == "resume" and stale)
     if tick:
-        os.makedirs(os.path.dirname(CLOCK), exist_ok=True)
-        with open(CLOCK, "a") as f:
-            f.write("%s %s\n" % (now(), git("rev-parse", "--short", "HEAD") or "-"))
+        write(CLOCK, (read(CLOCK) if os.path.exists(CLOCK) else "") + "%s %s\n" % (now(), git("rev-parse", "--short", "HEAD") or "-"))
     try:
         rep = run_check("all")
     except DokimeError as ex:  # the block must reach the agent: SessionStart shows stdout only on exit 0
@@ -469,6 +450,20 @@ def cmd_stop_hook(a):
     return rep, ""
 
 
+def cmd_post_tool(a):
+    """PostToolUse hook (Bash|Skill): silent unless HEAD moved or a skill loaded, then flags only. No run: conditions, no next:."""
+    skill, head, seen = hook_payload().get("tool_name") == "Skill", git("rev-parse", "HEAD") or "", os.path.join(".dokime", "head")
+    if not skill and head == (read(seen).strip() if os.path.exists(seen) else None):
+        return {"skipped": True}, ""
+    write(seen, head + "\n")
+    try:
+        rep = run_check("tool")
+        text = render(rep) if rep["flags"] else status_line(rep) if skill else ""
+    except DokimeError as ex:  # a broken ledger must reach the agent, not only the terminal
+        rep, text = {"error": str(ex)}, "dokime: %s" % ex
+    return rep, json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}}) if text else ""
+
+
 class Flagged(DokimeError):
     def __init__(self, rep, text, code=1):
         super().__init__(text)
@@ -487,21 +482,33 @@ HANDOFF_TEMPLATE = "## Done\n\n## Next\n"
 INTENT_STUB = "# intent\n\n" + "".join(h + "\n- TODO\n\n" for h in HEADINGS)
 QUESTIONS = (("Goals", "What must this repo achieve? (one per line, blank line ends)"), ("Non-goals", "What will it deliberately not do?"),
              ("Acceptance criteria", "What observable results mean done?"), ("Invariants", "What must never change while working?"))
-PIECES = ("units", "handoffs", "hooks", "claude-md", "gitignore", "intent")
+PIECES = ("units", "handoffs", "hooks", "skill", "claude-md", "gitignore", "intent")
+SKILL = os.path.join(".claude", "skills", "dokime", "SKILL.md")
+SKILL_MD = """---
+name: dokime
+description: Check or set up dokime governance (intent.md, units/ ledger, hooks). Use for /dokime, "dokime status", or "is this repo governed".
+---
+Run `{c} check` and show the block verbatim, `next:` line included; do not summarise it. `next:` names the one command that applies.
+When pieces are missing, run `{c} init` and show its report; write only the pieces the user confirms, with `{c} init --write=<pieces>`.
+`--write=intent` runs an interview: ask the user its four questions, feed the answers, and write only after they say yes. Never invent goals, non-goals, criteria or invariants.
+Never edit intent.md or a unit's done_condition without asking.
+"""
 
 
-def dokime_cmd():
+def dokime_cmd(hook=True):
+    """How a hook (or the skill) invokes dokime; None when neither on PATH nor inside this repo (an absolute path only works here)."""
     if shutil.which("dokime"):
         return "dokime"
     here, top = os.path.abspath(__file__), os.getcwd()
     if here.startswith(top + os.sep):
-        return 'python3 "$CLAUDE_PROJECT_DIR/%s"' % os.path.relpath(here, top)
-    return None  # an absolute path would only work on this machine
+        return ('python3 "$CLAUDE_PROJECT_DIR/%s"' if hook else "python3 %s") % os.path.relpath(here, top)
+    return None
 
 
 def hook_config(c):
     return {"SessionStart": [{"hooks": [{"type": "command", "command": c + " session-start"}]}],
-            "Stop": [{"hooks": [{"type": "command", "command": c + " stop-hook"}]}]}
+            "Stop": [{"hooks": [{"type": "command", "command": c + " stop-hook"}]}],
+            "PostToolUse": [{"matcher": "Bash|Skill", "hooks": [{"type": "command", "command": c + " post-tool"}]}]}
 
 
 def interview():
@@ -548,6 +555,7 @@ def planned_writes():
     else:
         cur["hooks"] = hook_config(c)
         plan["hooks"] = (SETTINGS, json.dumps(cur, indent=2) + "\n", "missing")
+    plan["skill"] = (SKILL, None if os.path.exists(SKILL) else SKILL_MD.format(c=dokime_cmd(hook=False) or "dokime"), "present" if os.path.exists(SKILL) else "missing")
     md = read(CLAUDE_MD) if os.path.exists(CLAUDE_MD) else ""
     plan["claude-md"] = (CLAUDE_MD, None if MARK in md else md.rstrip("\n") + ("\n\n" if md else "") + CLAUDE_LINES, "present" if MARK in md else "missing")
     gi = read(GITIGNORE) if os.path.exists(GITIGNORE) else ""
@@ -570,9 +578,7 @@ def cmd_init(a):
                 report[piece], line = "not written", "%s: not written (%s)" % (piece, ex)
                 lines.append(line)
                 continue
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            with open(path, "w") as f:
-                f.write(new)
+            write(path, new)
             report[piece], line = "written", "%s: written %s" % (piece, path)
         else:
             report[piece], line = note, "%s: %s" % (piece, note)
@@ -589,28 +595,19 @@ def cmd_uninstall(a):
     removed = []
     if os.path.exists(SETTINGS):
         cur = json.loads(read(SETTINGS))
-        for ev in list(cur.get("hooks") or {}):
-            kept = [h for h in cur["hooks"][ev] if "dokime" not in json.dumps(h)]
-            if len(kept) != len(cur["hooks"][ev]):
-                removed.append("hook " + ev)
-            cur["hooks"][ev] = kept
-        cur["hooks"] = {k: v for k, v in (cur.get("hooks") or {}).items() if v}
+        hooks = {ev: [h for h in hs if "dokime" not in json.dumps(h)] for ev, hs in (cur.get("hooks") or {}).items()}
+        removed += ["hook " + ev for ev, hs in hooks.items() if len(hs) != len(cur["hooks"][ev])]
+        cur["hooks"] = {ev: hs for ev, hs in hooks.items() if hs}
         if not cur["hooks"]:
             del cur["hooks"]
         if removed:
-            with open(SETTINGS, "w") as f:
-                f.write(json.dumps(cur, indent=2) + "\n")
+            write(SETTINGS, json.dumps(cur, indent=2) + "\n")
     if os.path.exists(CLAUDE_MD) and MARK in read(CLAUDE_MD):
         md = re.sub(r"\n*" + re.escape(MARK) + r".*?" + re.escape(ENDMARK) + r"\n?", "\n", read(CLAUDE_MD), flags=re.S).strip("\n")
-        if md:
-            with open(CLAUDE_MD, "w") as f:
-                f.write(md + "\n")
-        else:
-            os.remove(CLAUDE_MD)
+        write(CLAUDE_MD, md + "\n") if md else os.remove(CLAUDE_MD)
         removed.append("CLAUDE.md block")
     if os.path.exists(GITIGNORE) and ".dokime/" in read(GITIGNORE).splitlines():
-        with open(GITIGNORE, "w") as f:
-            f.write("".join(ln + "\n" for ln in read(GITIGNORE).splitlines() if ln != ".dokime/"))
+        write(GITIGNORE, "".join(ln + "\n" for ln in read(GITIGNORE).splitlines() if ln != ".dokime/"))
         removed.append(".gitignore line")
     return {"removed": removed}, "removed: " + (", ".join(removed) or "nothing") + "\nkept: intent.md, units/, handoffs/, .dokime/ (records; delete by hand)"
 
@@ -677,6 +674,7 @@ def build_parser():
     add("session-start", cmd_session_start, "SessionStart hook: print the check; tick the clock on startup|clear")
     s = add("stop-hook", cmd_stop_hook, "Stop hook: integrity rules; blocks only with --strict")
     s.add_argument("--strict", action="store_true", help="exit 2 (blocks) when flagged")
+    add("post-tool", cmd_post_tool, "PostToolUse hook (Bash|Skill): after HEAD moves or a skill loads, flags only")
     s = add("init", cmd_init, "report missing pieces; write only with --write")
     s.add_argument("--write", metavar="PIECES", help="all or comma list of " + ",".join(PIECES))
     add("uninstall", cmd_uninstall, "remove hooks, CLAUDE.md block and .gitignore line; keep records")
@@ -690,17 +688,14 @@ def build_parser():
 def main(argv=None):
     a = build_parser().parse_args(argv)
     try:
-        os.chdir(root())
+        os.chdir(git("rev-parse", "--show-toplevel", check=True))
         data, text = a.fn(a)
     except Flagged as ex:
         print(json.dumps(ex.rep, indent=2, sort_keys=True) if a.json else str(ex),
               file=sys.stderr if ex.code == 2 else sys.stdout)
         return ex.code
     except (DokimeError, OSError, ValueError) as ex:
-        if a.json:
-            print(json.dumps({"error": str(ex)}))
-        else:
-            print("dokime: " + str(ex), file=sys.stderr)
+        print(json.dumps({"error": str(ex)}) if a.json else "dokime: %s" % ex, file=sys.stdout if a.json else sys.stderr)
         return 1
     if a.json:
         print(json.dumps(data, indent=2, sort_keys=True))

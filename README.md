@@ -89,14 +89,18 @@ Two things that example chose, and why:
 
 What `init` does to files you already have:
 
-- `.claude/settings.json`: if the `hooks` key is absent or empty, the two dokime
-  hooks are added and every other setting is kept; the file is rewritten as
-  two-space JSON. If hooks already exist, init prints the snippet and does not
-  write; you paste it in.
+- `.claude/settings.json`: if the `hooks` key is absent or empty, the three
+  dokime hooks are added and every other setting is kept; the file is rewritten
+  as two-space JSON. If hooks already exist, init prints the snippet and does
+  not write; you paste it in.
+- `.claude/skills/dokime/SKILL.md`: written if absent, so `/dokime` (or "what is
+  the dokime status") runs `check` and shows the block. Any existing file is
+  left alone.
 - `CLAUDE.md`: three lines are appended between `<!-- dokime -->` markers. The
   rest of the file is untouched.
 - `.gitignore`: one line, `.dokime/`, is appended if absent. The session clock
-  lives there, uncommitted: it is per checkout (each git worktree has its own),
+  and the PostToolUse hook's last-seen HEAD live there, uncommitted: the clock
+  is per checkout (each git worktree has its own),
   not counted across clones or in CI, and it can be edited without a diff. It
   is a counter, not an audit record.
 - Existing commits and branches: never touched. `check` reads history and
@@ -107,10 +111,13 @@ What `init` does to files you already have:
 The first session: open a unit and commit `units/`, start Claude Code and expect
 the status block in its context with a `next:` line, work and commit with the
 trailer `Unit: <name>`, then close the unit with a work commit as evidence.
-dokime records and reports; it does not stop the agent.
+After each commit the PostToolUse hook re-checks and speaks only when something
+is flagged, so a commit that forgot its trailer is named at once, not at the
+next session. dokime records and reports; it does not stop the agent.
 
 `dokime uninstall` removes the hooks, the CLAUDE.md block and the `.gitignore`
-line, and keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`.
+line, and keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`. It also leaves
+`.claude/skills/dokime/`; delete that directory by hand.
 
 ## Use
 
@@ -127,6 +134,12 @@ dokime uninstall                 # remove hooks, the CLAUDE.md block and the .gi
 ```
 
 Every command takes `--json`.
+
+Once the hooks are installed the commands above are mostly for humans. The
+agent gets the block at session start, a re-check after every commit and every
+skill load (silent unless flagged), and `/dokime` from the skill piece when
+someone wants the block on demand. Nothing needs to be remembered; the block's
+`next:` line and the CLAUDE.md lines carry the two rules.
 
 Work is tied to a unit by a git trailer: end each commit message with
 `Unit: <name>`, in the same final block as any `Co-Authored-By:` line. Git
@@ -180,7 +193,7 @@ marked `DIVERGENT` when commits landed on a day with no session, or, only if a
 
 ## Hooks
 
-`dokime init --write=hooks` adds two hooks to `.claude/settings.json`
+`dokime init --write=hooks` adds three hooks to `.claude/settings.json`
 (verified against Claude Code 2.1.270):
 
 - `SessionStart` runs `dokime session-start` on every source. It ticks the
@@ -194,6 +207,16 @@ marked `DIVERGENT` when commits landed on a day with no session, or, only if a
   never `run:` conditions. By default it is silent when clean, prints a
   `systemMessage` when flagged, and exits 0. With `--strict` it exits 2, which
   sends the flags back to the model.
+- `PostToolUse` (matcher `Bash|Skill`) runs `dokime post-tool` after every Bash
+  command and every skill load. It is silent unless HEAD moved since its last
+  run (a commit, amend, rebase or checkout, however it was made; the last-seen
+  HEAD is cached in `.dokime/head`) or the tool was a skill. Then it runs the
+  check without `run:` conditions and puts the status block into the agent's
+  context only when a flag is raised; after a skill load it always adds the
+  one-line status, so a handoff or kickoff skill of your own sees the ledger
+  state without any dokime step of its own. It never prints `next:`, never
+  echoes the tool's input, and cannot block. This is the channel an agent
+  mid-session actually sees: it does not need to remember to run `dokime`.
 
 **Unit files are code.** A `run:` condition is executed with the shell by
 `check`, `session-start` and `open`, for every unit that is not closed. Review
@@ -222,7 +245,9 @@ dokime guarantees:
 dokime does not:
 
 - Prevent an agent working past done. It makes that visible at the next session
-  start.
+  start or `dokime check`. The mid-session hooks (Stop, PostToolUse) never run
+  `run:` conditions, so `met-but-open` is not raised the moment a commit meets
+  the condition; a test suite would otherwise run inside every hook.
 - Know whether a commit is relevant to a unit.
 - See work that produces no commit and no handoff.
 - Keep a tamper-proof session count. The clock is a local, uncommitted file.
@@ -245,5 +270,9 @@ python3 tests/fixture.py handoffs path/to/repo/handoffs /tmp/replay   # a real r
 
 ## Claude Code skill
 
-`.claude/skills/dokime/SKILL.md` lets `/dokime` run `init` as a command. Copy the
-directory into another repo's `.claude/skills/` to use it there.
+`dokime init --write=skill` (included in `all`) writes
+`.claude/skills/dokime/SKILL.md`: `/dokime`, "dokime status" or "is this repo
+governed" runs `check` and shows the block verbatim, and runs `init` for the
+missing pieces only with the user's confirmation. The skill calls dokime the way
+init was run: `dokime` when it is on PATH, else `python3 <path to the vendored
+copy>`. It never edits `intent.md` or a pinned condition.

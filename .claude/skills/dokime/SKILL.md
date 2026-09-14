@@ -1,18 +1,8 @@
 ---
 name: dokime
-description: Set up or check dokime governance in this repo (intent.md, units/ ledger, session hooks). Use when the user says /dokime, asks to initialise dokime, or asks whether the repo is governed.
+description: Check or set up dokime governance (intent.md, units/ ledger, hooks). Use for /dokime, "dokime status", or "is this repo governed".
 ---
-
-# dokime
-
-Run `dokime init` (or `python3 dokime.py init` if it is not on PATH) and show the
-report verbatim. It writes nothing.
-
-If the user wants the missing pieces written, run `dokime init --write=<pieces>`
-with exactly the pieces they confirmed. `intent` runs an interview: ask the user
-the four questions it prints, feed their answers, show the draft, and write only
-after they say yes. Never invent goals, non-goals, criteria or invariants.
-
-Then run `dokime check` and show the status block. Do not summarise it.
-
-Never edit `intent.md` or a unit's `done_condition` without asking.
+Run `python3 dokime.py check` and show the block verbatim, `next:` line included; do not summarise it. `next:` names the one command that applies.
+When pieces are missing, run `python3 dokime.py init` and show its report; write only the pieces the user confirms, with `python3 dokime.py init --write=<pieces>`.
+`--write=intent` runs an interview: ask the user its four questions, feed the answers, and write only after they say yes. Never invent goals, non-goals, criteria or invariants.
+Never edit intent.md or a unit's done_condition without asking.
