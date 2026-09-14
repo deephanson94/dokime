@@ -125,11 +125,10 @@ keeps `intent.md`, `units/`, `handoffs/` and `.dokime/`.
 dokime init                      # report what is missing; writes nothing
 dokime init --write=all          # scaffold everything (intent.md via interview; a TODO stub without a terminal)
 dokime open build --condition "run: python3 -m unittest discover -s tests -q" --ceiling 3
-dokime check                     # status block; exit 1 on any flag
+dokime check                     # human view at a terminal, the agent block when piped; exit 1 on any flag
 dokime status                    # one line
 dokime close build               # refuses, and lists the commits carrying 'Unit: build'
 dokime close build --evidence commit:<one of them>
-dokime scan --condition "run: pytest -q"   # earliest recent commit where it passed
 dokime uninstall                 # remove hooks, the CLAUDE.md block, the .gitignore line and the skill
 ```
 
@@ -185,6 +184,20 @@ valid `Unit:` trailer; before the clock has ticked the window starts at the
 earliest open unit, and with neither it reads `unavailable`.
 `next:` names the applicable command: open a unit, commit under the open one,
 close the met one, or install the hooks.
+
+That block is the agent's: hooks, `--json`, `--full` and any pipe get it
+verbatim. At a terminal `check` prints the human view instead (`--brief` forces
+it): the one-line status, one line per flag with the token first and then the
+two records that disagree, `forced: <names>` for units closed with `--force`
+(the reason stays in the unit file), and `next:`. It is built from the same
+flag list as the block, so the two views can never disagree on what is flagged.
+
+```
+dokime: 2 flags: met-but-open(build) over-ceiling(build) | intent present | hooks configured | 3 units | sessions 4
+met-but-open(build)  build: the run: condition passes and the unit is still open.
+over-ceiling(build)  build: sessions counted exceed the unit's ceiling.
+next: dokime close build   (it lists the commits carrying the unit's trailer)
+```
 
 `sessions` comes from `.dokime/sessions.log`, which only the SessionStart hook
 appends to. When the hook is not installed it prints `unknown` and the ceiling is

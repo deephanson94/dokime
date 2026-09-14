@@ -97,9 +97,10 @@ Added by the Phase 0 review:
 - Stored timestamps (`opened_at`, `closed_at`, the clock) are UTC. Commit days are
   taken in the committer's own zone, the date a person would write for that day.
 - The mid-session hooks (Stop, PostToolUse) never execute `run:` conditions.
-  The Stop hook by default prints and exits 0; under `--strict` it exits 2 on
-  ledger-integrity rules only (pin, evidence refs), and it always short-circuits
-  when `stop_hook_active` is set. The PostToolUse hook cannot block, speaks only
+  The Stop hook by default prints and exits 0, and says a given session count,
+  HEAD and flag set once; under `--strict` it exits 2 on ledger-integrity rules
+  only (pin, evidence refs, a unit file deleted after it was committed), and it
+  always short-circuits when `stop_hook_active` is set. The PostToolUse hook cannot block, speaks only
   after HEAD moved or a skill loaded, and never echoes the tool's input.
 - The only unconditional gate is `dokime close`.
 - `init` writes nothing without `--write`. `uninstall` removes the hooks, the
@@ -125,7 +126,7 @@ Recorded so the deviations from the original specification are visible.
    from handoff filenames.
 6. Two commands added: `scan` (walk recent commits with a `run:` condition and
    print the earliest commit where it passed and how many followed) and
-   `uninstall`.
+   `uninstall`. `scan` was removed again by Decision 10.
 7. The `init` interview runs only under `--write=intent`: four questions, draft
    shown before writing, nothing invented. Without a terminal it writes the four
    headings with TODO markers and `check` reports `intent: stub`, so a first run
@@ -139,3 +140,14 @@ Recorded so the deviations from the original specification are visible.
    status block only when flagged, through `additionalContext`. It is on by
    default because it is silent when clean. `init --write=skill` writes the
    `/dokime` skill as the on-demand entry point; there is no TUI.
+10. `check` has two renderings. The block is the agent's, byte for byte
+    (hooks, `--json`, `--full`, any pipe); a human at a terminal gets one line
+    per flag, built from the same flag list, with the token first and the two
+    records that disagree after it. No sentence tells the reader what to do;
+    `next:` does that, once. That pin is a unit's done condition, not an
+    invariant: a defect in the block stays fixable. `scan` was deleted to pay
+    for it: it ran on no hook path and appeared in no acceptance criterion.
+11. The Stop hook's `systemMessage` is the user's terminal, not the model
+    (verified against Claude Code 2.1.270: no Stop variant exists in
+    `hookSpecificOutput`), so it carries the human sentences; `--strict`'s
+    stderr and PostToolUse `additionalContext` carry the block.

@@ -1,0 +1,11 @@
+{
+  "ceiling_sessions": 1,
+  "closed_at": null,
+  "closed_by": null,
+  "done_condition": "run: python3 -m unittest tests.test_dokime.CheckTest.test_brief_view tests.test_dokime.CheckTest.test_agent_block_is_pinned -q",
+  "done_condition_sha256": "4d3b18caf6d019d2901159bbd8d79f89338894e38c1ca42b6e1e812b6ae7f8c4",
+  "evidence": [],
+  "name": "human-view",
+  "opened_at": "2026-09-14T15:23:11+00:00",
+  "status": "open"
+}

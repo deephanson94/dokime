@@ -1,4 +1,4 @@
-import io, json, os, shutil, subprocess, sys, tempfile, unittest
+import io, json, os, re, shutil, subprocess, sys, tempfile, unittest
 from contextlib import redirect_stdout, redirect_stderr
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +27,22 @@ def run(*argv):
     with redirect_stdout(out), redirect_stderr(err):
         code = dokime.main(list(argv))
     return code, out.getvalue(), err.getvalue()
+
+
+# The agent block as captured from the fixtures before the human view existed; render() must reproduce it byte for byte.
+GOLDEN_A = """intent: present  hooks: absent  history: full
+unit feat: open  condition pass  evidence none  pin unchanged  sessions 3/3  MET-BUT-OPEN
+handoffs: 2  last 2026-09-02-session-2.md
+sessions: 3 (clock, ticked)  handoffs 2  commit-days 2
+attribution: 1 of 1 commits since last session
+flags: met-but-open(feat)
+next: dokime close feat   (it lists the commits carrying the unit's trailer)"""
+GOLDEN_B = """intent: present  hooks: absent  history: full
+handoffs: 1  last 2026-09-01-session-1.md
+sessions: 2 (clock, ticked)  handoffs 1  commit-days 1
+attribution: 0 of 1 commits since last session
+flags: work-without-unit(1 commit)
+next: dokime open <name> --condition "run: <a command that fails now>\""""
 
 
 class RepoCase(unittest.TestCase):
@@ -60,6 +76,12 @@ class RepoCase(unittest.TestCase):
         sys.stdin = io.StringIO('{"source": "startup"}')
         self.assertEqual(run("session-start")[0], 0)
         sys.stdin = io.StringIO("")
+
+    def open_at(self, name, when, cond="x", ceiling=3):
+        os.environ["DOKIME_NOW"] = when
+        self.assertEqual(run("open", name, "--condition", cond, "--ceiling", str(ceiling))[0], 0)
+        git("add", "-A"); git("commit", "-qm", "open " + name, when=when)
+        return dokime.load_unit(name)["opened_at"]
 
     def work_commit(self, name="w.txt", when="2026-06-01T00:00:00+00:00", unit=None):
         write(name, name + "\n")
@@ -264,7 +286,7 @@ class CheckTest(RepoCase):
         d = dokime.load_unit("u"); d["done_condition"] = "y"; dokime.save_unit(d)
         sys.stdin = io.StringIO("{}")
         code, out, _ = run("stop-hook")
-        self.assertEqual((code, json.loads(out)["systemMessage"]), (0, "dokime: clock-absent pin-changed(u)"))
+        self.assertEqual((code, json.loads(out)["systemMessage"].splitlines()[0]), (0, "dokime: clock-absent  " + dokime.SENTENCE["clock-absent"]))
         sys.stdin = io.StringIO("{}")
         code, _, err = run("stop-hook", "--strict")
         self.assertEqual(code, 2)
@@ -273,6 +295,44 @@ class CheckTest(RepoCase):
         self.assertEqual(run("stop-hook", "--strict")[0], 0)
         sys.stdin = sys.__stdin__
 
+
+    def test_brief_view(self):
+        """Human view: status line, one line per flag with the token first, forced closes named, next:; the block stays elsewhere."""
+        code, out, _ = run("check", "--brief")
+        self.assertEqual((code, out.splitlines()[0]), (0, dokime.status_line(dokime.run_check("all"))))   # clean: status + next:, never silence
+        self.assertEqual(len(out.splitlines()), 2)
+        self.open_at("v", "2026-03-01T00:00:00+00:00")
+        run("close", "v", "--evidence", "commit:" + self.work_commit("v.txt", unit="v"), "--force", "why-text")
+        self.open_at("u", "2026-03-02T00:00:00+00:00", cond="run: test -f w.txt")
+        self.work_commit("w.txt", when="2026-03-02T10:00:00+00:00")                            # passes now, no trailer
+        code, out, _ = run("check", "--brief")
+        rep, lines = dokime.run_check("all"), out.splitlines()
+        self.assertEqual(code, 1)
+        self.assertEqual([ln.split("  ")[0] for ln in lines[1:1 + len(rep["flags"])]], rep["flags"])   # every flag, in order
+        self.assertIn("met-but-open(u)  u: the run: condition passes and the unit is still open.", out)
+        self.assertIn("forced: v", out)
+        self.assertNotIn("why-text", out)                                                        # the reason stays in the unit file
+        self.assertTrue(lines[-1].startswith("next: dokime close u"))
+        full = run("check", "--full")[1]
+        self.assertIn("unit u: open  condition pass", full)
+        self.assertNotIn("still open", full)
+        self.assertEqual(run("check")[1], full)                                                  # no tty under test: the block
+        src = dokime.read(os.path.join(os.path.dirname(HERE), "dokime.py"))
+        names = {n.rstrip("-") for n in re.findall(r'flags"\]\.append\("([a-z-]+)', src)}
+        self.assertEqual(names - {"intent"} | {"intent-missing", "intent-incomplete"}, set(dokime.SENTENCE))
+        sys.stdin = io.StringIO("{}")
+        msg = json.loads(run("stop-hook")[1])["systemMessage"]
+        self.assertTrue(msg.startswith("dokime: " + rep["flags"][0] + "  "), msg)                 # tokens stay, sentences follow
+        self.assertIn("carry no Unit: trailer", msg)
+        sys.stdin = sys.__stdin__
+
+    def test_agent_block_is_pinned(self):
+        for s, i, want in ((fixture.scenario_a(), 2, GOLDEN_A), (fixture.scenario_b(), 1, GOLDEN_B)):
+            tmp = tempfile.mkdtemp()
+            try:
+                self.assertEqual(dokime.render(fixture.replay(tmp, s)[i]), want)
+            finally:
+                shutil.rmtree(tmp)
 
     def test_stop_hook_reports_drift(self):
         """Stop sees over-ceiling and work-without-unit (no condition needed); never met-but-open; --strict blocks on integrity only."""
@@ -487,28 +547,8 @@ class InitTest(RepoCase):
         self.assertTrue(dokime.read("CLAUDE.md").startswith("# mine\n\n" + dokime.MARK))
 
 
-class ScanTest(RepoCase):
-    def test_scan_finds_earliest_pass(self):
-        self.work_commit("a.txt"); self.work_commit("ok"); self.work_commit("b.txt")
-        code, out, _ = run("scan", "--condition", "run: test -f ok", "--json")
-        self.assertEqual(code, 0)
-        r = json.loads(out)
-        self.assertEqual((r["commits_after"], r["checked"]), (1, 3))
-        self.assertEqual(r["earliest_pass"][:7], subprocess.check_output(["git", "rev-parse", "--short=7", "HEAD~1"], text=True).strip())
-        code, out, _ = run("scan", "--condition", "run: test -f nope")
-        self.assertIn("earliest passing: none", out)
-        self.assertEqual(run("scan", "--condition", "prose")[0], 1)
-        self.assertEqual(subprocess.check_output(["git", "worktree", "list"], text=True).count("\n"), 1)
-
-
 class RegressionTest(RepoCase):
     """Findings from the user-test panel."""
-
-    def open_at(self, name, when, cond="x", ceiling=3):
-        os.environ["DOKIME_NOW"] = when
-        self.assertEqual(run("open", name, "--condition", cond, "--ceiling", str(ceiling))[0], 0)
-        git("add", "-A"); git("commit", "-qm", "open " + name, when=when)
-        return dokime.load_unit(name)["opened_at"]
 
     def test_evidence_date_uses_offsets(self):
         opened = self.open_at("u", "2026-09-13T10:00:00+00:00")

@@ -3,7 +3,7 @@
 
 Stdlib + git only. See intent.md for goals, non-goals, invariants.
 """
-import argparse, datetime, difflib, hashlib, json, os, re, shutil, subprocess, sys, tempfile
+import argparse, datetime, difflib, hashlib, json, os, re, shutil, subprocess, sys
 
 UNITS, HANDOFFS, INTENT = "units", "handoffs", "intent.md"
 CLOCK = os.path.join(".dokime", "sessions.log")
@@ -398,7 +398,7 @@ def render(rep):
 
 def cmd_check(a):
     rep = run_check(a.at)
-    text = render(rep)
+    text = brief(rep) if a.brief or (sys.stdout.isatty() and not (a.full or a.json)) else render(rep)
     if rep["flags"] and a.warn_only:
         text += "\nwarning: %d flag(s), exit downgraded by --warn-only" % len(rep["flags"])
     elif rep["flags"]:
@@ -411,6 +411,36 @@ def status_line(rep):
     return "dokime: %s | intent %s | hooks %s | %d unit%s | sessions %s" % (
         "ok" if not n else "%d flag%s: %s" % (n, "s"[n == 1:], " ".join(rep["flags"])),
         rep["intent"], rep["hooks"], u, "s"[u == 1:], "unknown" if s is None else s)
+
+
+SENTENCE = {  # the human view: per flag, the two records that disagree; no verb aimed at the reader, next: carries the command
+    "met-but-open": "%s: the run: condition passes and the unit is still open.",
+    "pin-changed": "%s: the done condition differs from the text pinned at open.",
+    "evidence-invalid": "%s: an evidence ref no longer resolves.",
+    "over-ceiling": "%s: sessions counted exceed the unit's ceiling.",
+    "unit-missing": "%s: the unit file was committed and is now gone.",
+    "work-without-unit": "%s since the last session start carry no Unit: trailer naming an open unit.",
+    "intent-missing": "intent.md is absent.", "intent-incomplete": "intent.md lacks one of the four headings.",
+    "clock-absent": "no session clock: a unit is open and the SessionStart hook has never ticked.",
+    "history-shallow": "shallow clone: the pin rule cannot run here.",
+    "conditions-disabled": "DOKIME_NESTED is set: no run: condition is executed."}
+
+
+def sentences(rep):
+    """One line per flag, the token first. Built from rep["flags"] alone, so the human view cannot omit a flag the block has."""
+    out = []
+    for t in rep["flags"]:
+        name, _, arg = t.partition("(")
+        tpl = SENTENCE.get(name, "%s: flagged.")
+        out.append(t + "  " + (tpl % (arg.rstrip(")") or name) if "%s" in tpl else tpl))
+    return out
+
+
+def brief(rep):
+    """Human view: status line, flag sentences, forced closes by name (never the reason), next:. render() is the agent block."""
+    forced = [r["name"] for r in rep["units"] if r.get("forced")]
+    return "\n".join([status_line(rep)] + sentences(rep) + (["forced: " + " ".join(forced)] if forced else [])
+                     + (["next: " + rep["next"]] if "next" in rep else []))
 
 
 def cmd_status(a):
@@ -452,7 +482,7 @@ def cmd_stop_hook(a):
     cur = "%s %s %s" % (rep["sessions"]["clock"], git("rev-parse", "HEAD") or "-", " ".join(rep["flags"]))
     quiet = cur == (read(STOP_SEEN).strip() if os.path.exists(STOP_SEEN) else None)
     write(STOP_SEEN, cur + "\n")
-    return (rep, json.dumps({"systemMessage": "dokime: " + " ".join(rep["flags"])})) if rep["flags"] and not quiet else (rep, "")
+    return (rep, json.dumps({"systemMessage": "dokime: " + "\n".join(sentences(rep))})) if rep["flags"] and not quiet else (rep, "")
 
 
 def cmd_post_tool(a):
@@ -620,36 +650,6 @@ def cmd_uninstall(a):
     return {"removed": removed}, "removed: " + (", ".join(removed) or "nothing") + "\nkept: intent.md, units/, handoffs/, .dokime/ (records; delete by hand)"
 
 
-def cmd_scan(a):
-    """Walk back from HEAD running a run: condition in a detached worktree per commit."""
-    if not a.condition.startswith("run:"):
-        raise DokimeError("scan needs an executable condition (run: ...)")
-    shas = (git("rev-list", "--max-count=%d" % a.limit, "HEAD") or "").splitlines()
-    results, tmp = [], tempfile.mkdtemp(prefix="dokime-scan-")
-    try:
-        for sha in shas:
-            wt = os.path.join(tmp, sha[:10])
-            git("worktree", "add", "--detach", "-q", wt, sha, check=True)
-            cwd = os.getcwd()
-            try:
-                os.chdir(wt)
-                results.append((sha, run_condition(a.condition, timeout=a.timeout)))
-            finally:
-                os.chdir(cwd)
-                git("worktree", "remove", "--force", wt)
-            if results[-1][1] != "pass":
-                break
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-        git("worktree", "prune")
-    passing = [s for s, r in results if r == "pass"]
-    if not passing:
-        return {"earliest_pass": None, "checked": len(results)}, "HEAD: %s  earliest passing: none in %d commit(s)" % (results[0][1] if results else "no commits", len(results))
-    first, when = passing[-1], git("show", "-s", "--format=%cI", passing[-1])
-    return {"earliest_pass": first, "date": when, "commits_after": len(passing) - 1, "checked": len(results)}, \
-        "earliest passing: %s %s  commits after it: %d  (checked %d of last %d)" % (first[:10], when, len(passing) - 1, len(results), a.limit)
-
-
 # -------------------------------------------------------------------- cli
 def build_parser():
     p = argparse.ArgumentParser(prog="dokime", description=__doc__.splitlines()[0])
@@ -678,6 +678,8 @@ def build_parser():
     s.add_argument("--at", choices=("all", "hook"), default="all",
                    help="hook = what the mid-session hooks see: no run: conditions, no next:")
     s.add_argument("--warn-only", action="store_true", help="exit 0 even when flagged")
+    s.add_argument("--brief", action="store_true", help="human view, one line per flag (the default at a terminal)")
+    s.add_argument("--full", action="store_true", help="the agent block (the default when piped; hooks and --json always get it)")
     add("status", cmd_status, "one-line status")
     add("session-start", cmd_session_start, "SessionStart hook: print the check; tick the clock on startup|clear")
     s = add("stop-hook", cmd_stop_hook, "Stop hook: flags only; --strict blocks on integrity flags")
@@ -686,10 +688,6 @@ def build_parser():
     s = add("init", cmd_init, "report missing pieces; write only with --write")
     s.add_argument("--write", metavar="PIECES", help="all or comma list of " + ",".join(PIECES))
     add("uninstall", cmd_uninstall, "remove hooks, CLAUDE.md block and .gitignore line; keep records")
-    s = add("scan", cmd_scan, "find the earliest recent commit where a run: condition passes")
-    s.add_argument("--condition", required=True)
-    s.add_argument("--limit", type=int, default=20, help="commits to walk back (default 20)")
-    s.add_argument("--timeout", type=int, default=120, help="seconds per run (default 120)")
     return p
 
 
