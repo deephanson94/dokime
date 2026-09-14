@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-14T15:32:13+00:00",
+  "closed_by": "Claude",
   "done_condition": "run: python3 -m unittest tests.test_dokime.InitTest.test_configured_handoff_path -q",
   "done_condition_sha256": "6bb6ed350104882737e4f6fa7f95f44961e19317addba1402c64f750e4f9671b",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "8cffe21"
+    }
+  ],
   "name": "handoff-path",
   "opened_at": "2026-09-14T15:29:19+00:00",
-  "status": "open"
+  "status": "closed"
 }
