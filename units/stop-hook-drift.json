@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-14T15:23:11+00:00",
+  "closed_by": "Claude",
   "done_condition": "run: python3 -m unittest tests.test_dokime.CheckTest.test_stop_hook_reports_drift -q",
   "done_condition_sha256": "0dbe992fe1c16b5ac7b242c64ad6da2d9814cba4afe6f8005d4137a9d8389f8d",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "93476c2"
+    }
+  ],
   "name": "stop-hook-drift",
   "opened_at": "2026-09-14T14:41:02+00:00",
-  "status": "open"
+  "status": "closed"
 }
