@@ -1,11 +1,16 @@
 {
   "ceiling_sessions": 1,
-  "closed_at": null,
-  "closed_by": null,
+  "closed_at": "2026-09-14T05:50:18+00:00",
+  "closed_by": "Claude",
   "done_condition": "run: python3 dokime.py post-tool --help >/dev/null 2>&1",
   "done_condition_sha256": "71c780671576f2a691718db0650b7bf34695731edc4a0a42b371150ac53cf39e",
-  "evidence": [],
+  "evidence": [
+    {
+      "kind": "commit",
+      "ref": "6c08b554d629440be6b1a5e2d75043efbada2bc0"
+    }
+  ],
   "name": "post-tool-hook",
   "opened_at": "2026-09-14T05:38:57+00:00",
-  "status": "open"
+  "status": "closed"
 }
