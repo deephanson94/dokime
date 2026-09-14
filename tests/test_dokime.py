@@ -498,6 +498,18 @@ class InitTest(RepoCase):
         self.assertEqual(set(json.loads(out)["pieces"].values()), {"present"})
         shutil.rmtree("handoffs")
 
+    def test_claude_md_block_and_open_hint(self):
+        """The block holds only the two rules no hook states; open itself states the trailer at the moment of use."""
+        run("init", "--write=claude-md")
+        md = dokime.read("CLAUDE.md")
+        self.assertIn("trailer `Unit: <name>`", md)
+        self.assertIn("Never edit intent.md", md)
+        self.assertNotIn("governed by dokime", md)                          # the session-start block already says what dokime is
+        self.assertEqual(md.count("\n"), 4)                                 # marker, two lines, marker
+        code, out, _ = run("open", "u", "--condition", "run: test -f nope")
+        self.assertEqual(code, 0)
+        self.assertIn("commit work with the trailer 'Unit: u'", out)
+
     def test_interview_declined_writes_nothing(self):
         os.remove("intent.md")
         write("answers.txt", "g\n\nn\n\na\n\ni\n\nno\n")

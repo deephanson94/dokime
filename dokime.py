@@ -218,7 +218,8 @@ def cmd_open(a):
         raise DokimeError("done_condition already passes; a unit needs a condition that is false now")
     save_unit(d)
     warn = "" if cond.startswith("run:") else "\nwarning: done_condition is prose: it will stay unverified"
-    return {"unit": d, "warnings": warn.strip()}, "opened %s (pin %s)%s" % (a.name, d["done_condition_sha256"][:12], warn)
+    return {"unit": d, "warnings": warn.strip()}, "opened %s (pin %s); commit work with the trailer 'Unit: %s'%s" % (
+        a.name, d["done_condition_sha256"][:12], a.name, warn)
 
 
 def finish(a, status):
@@ -509,10 +510,9 @@ class Flagged(DokimeError):
 SETTINGS, CLAUDE_MD, GITIGNORE = os.path.join(".claude", "settings.json"), "CLAUDE.md", ".gitignore"
 MARK, ENDMARK = "<!-- dokime -->", "<!-- /dokime -->"
 CLAUDE_LINES = MARK + """
-This repo is governed by dokime: intent.md is the agreement, units/ is the ledger, `dokime check` is the boundary check and its `next:` line names the command that applies.
 Open a unit before work (`dokime open <name> --condition "run: ..."`) and end every commit message with the trailer `Unit: <name>` in the final trailer block.
 Never edit intent.md or a unit's done_condition without asking.
-""" + ENDMARK + "\n"
+""" + ENDMARK + "\n"  # only what no hook states at the moment of use; the session-start block already says what dokime is
 HANDOFF_TEMPLATE = "## Done\n\n## Next\n"
 INTENT_STUB = "# intent\n\n" + "".join(h + "\n- TODO\n\n" for h in HEADINGS)
 QUESTIONS = (("Goals", "What must this repo achieve? (one per line, blank line ends)"), ("Non-goals", "What will it deliberately not do?"),

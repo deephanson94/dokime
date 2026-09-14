@@ -79,9 +79,10 @@ git add -A && git commit -m "Adopt dokime"
 Two things that example chose, and why:
 
 - No `CLAUDE.md`. The repo deliberately had none. The `claude-md` piece was left
-  unwritten and the three lines went into the repo's own process doc. Claude
+  unwritten and the two lines went into the repo's own process doc. Claude
   Code auto-loads only `CLAUDE.md`, so the agent gets the hook's status block
-  but no standing instruction; `init --write=claude-md` adds the
+  but no standing statement of the never-edit rule; `open` states the trailer
+  rule in its own output, and `init --write=claude-md` adds the
   marker-delimited block later if wanted.
 - No first unit. A unit whose condition is "the adoption files exist" is true
   the moment it is written and certifies nothing. The next real change opens
@@ -96,8 +97,12 @@ What `init` does to files you already have:
 - `.claude/skills/dokime/SKILL.md`: written if absent, so `/dokime` (or "what is
   the dokime status") runs `check` and shows the block. Any existing file is
   left alone.
-- `CLAUDE.md`: three lines are appended between `<!-- dokime -->` markers. The
-  rest of the file is untouched.
+- `CLAUDE.md`: two lines are appended between `<!-- dokime -->` markers: open
+  a unit and trailer commits; never edit `intent.md` or a pinned condition
+  without asking. What dokime is, the block at session start already says. The
+  rest of the file is untouched. A repo whose `CLAUDE.md` is guarded by its own
+  amendment process can skip the piece with `--write=<pieces>`; `check` never
+  reads `CLAUDE.md`.
 - `.gitignore`: one line, `.dokime/`, is appended if absent. The session clock
   and the PostToolUse hook's last-seen HEAD live there, uncommitted: the clock
   is per checkout (each git worktree has its own),
@@ -137,8 +142,10 @@ Every command takes `--json`.
 Once the hooks are installed the commands above are mostly for humans. The
 agent gets the block at session start, a re-check after every commit and every
 skill load (silent unless flagged), and `/dokime` from the skill piece when
-someone wants the block on demand. Nothing needs to be remembered; the block's
-`next:` line and the CLAUDE.md lines carry the two rules.
+someone wants the block on demand. Nothing needs to be remembered: `open`
+prints the trailer rule when it matters, the block's `next:` line names the
+command from the next session start on, and the CLAUDE.md lines hold the two
+rules no hook can state.
 
 Work is tied to a unit by a git trailer: end each commit message with
 `Unit: <name>`, in the same final block as any `Co-Authored-By:` line. Git
