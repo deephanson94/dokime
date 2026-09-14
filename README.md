@@ -203,10 +203,13 @@ marked `DIVERGENT` when commits landed on a day with no session, or, only if a
   `compact`, or when flagged, and one status line on a clean resume. It cannot
   block. Per unit, the session count is the highest of clock, handoffs and
   commit days since open, so the agent can only inflate its own count.
-- `Stop` runs `dokime stop-hook`: ledger-integrity rules only (pin, evidence),
-  never `run:` conditions. By default it is silent when clean, prints a
-  `systemMessage` when flagged, and exits 0. With `--strict` it exits 2, which
-  sends the flags back to the model.
+- `Stop` runs `dokime stop-hook`: every flag that needs no `run:` condition
+  (`over-ceiling`, `work-without-unit`, pin and evidence), never `met-but-open`
+  and never `next:`. By default it is silent when clean, prints a
+  `systemMessage` when flagged, and exits 0. With `--strict` it exits 2 on the
+  ledger-integrity flags alone (pin, evidence, a missing unit file, shallow
+  history), which sends the block back to the model; drift flags stay a
+  `systemMessage`.
 - `PostToolUse` (matcher `Bash|Skill`) runs `dokime post-tool` after every Bash
   command and every skill load. It is silent unless HEAD moved since its last
   run (a commit, amend, rebase or checkout, however it was made; the last-seen

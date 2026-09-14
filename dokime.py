@@ -8,6 +8,7 @@ import argparse, datetime, difflib, hashlib, json, os, re, shutil, subprocess, s
 UNITS, HANDOFFS, INTENT = "units", "handoffs", "intent.md"
 CLOCK = os.path.join(".dokime", "sessions.log")
 STATUSES = ("open", "met", "closed")
+INTEGRITY = ("pin-changed", "evidence-invalid", "unit-missing", "history-shallow")  # the only flags --strict blocks on
 KINDS = ("commit", "artifact", "sha256")
 SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -313,7 +314,7 @@ def check_unit(u, at, starts, hs, cs):
         r["flags"].append("evidence-invalid")
     if u["status"] == "open" and r["condition"] == "pass":
         r["flags"].append("met-but-open")
-    if u["status"] != "closed" and at != "stop":
+    if u["status"] != "closed":
         opened = u["opened_at"]
         r["handoffs"] = sum(1 for h in hs if h[0] >= utc_date(opened))
         r["commit_days"] = len(set(c["date"] for c in cs if c["date"] >= utc_date(opened)))
@@ -330,11 +331,11 @@ def run_check(at="all"):
     rep = {"at": at, "intent": intent_status(), "units": [], "flags": [],
            "hooks": "configured" if hooks_configured() else "absent",
            "history": "shallow" if git("rev-parse", "--is-shallow-repository") == "true" else "full"}
-    if rep["intent"] not in ("present", "stub") and at != "stop":
+    if rep["intent"] not in ("present", "stub"):
         rep["flags"].append("intent-" + rep["intent"])
     if at == "stop" and rep["history"] == "shallow" and units:
         rep["flags"].append("history-shallow")
-    if at != "stop" and starts is None and rep["hooks"] == "absent" and any(u["status"] != "closed" for u in units):
+    if starts is None and rep["hooks"] == "absent" and any(u["status"] != "closed" for u in units):
         rep["flags"].append("clock-absent")
     ever = (git("log", "--diff-filter=A", "--format=", "--name-only", "--", UNITS) or "").split()
     for path in sorted(set(ever)):
@@ -344,21 +345,21 @@ def run_check(at="all"):
         r = check_unit(u, at, starts, hs, cs)
         rep["units"].append(r)
         rep["flags"] += ["%s(%s)" % (f, u["name"]) for f in r["flags"]]
-    if at != "stop":
-        rep["handoffs"] = {"count": len(hs), "last": hs[-1][1] if hs else None}
-        since = utc_date(starts[0]) if starts else ""
-        n_days, n_hs = len(set(c["date"] for c in cs if c["date"] >= since)), sum(1 for h in hs if h[0] >= since)
-        rep["sessions"] = {"clock": None if starts is None else len(starts), "handoffs": len(hs),
-                           "commit_days": len(set(c["date"] for c in cs)), "divergent": bool(starts) and (
-                               (os.path.isdir(HANDOFFS) and n_hs < len(starts) - 1) or n_days > len(starts))}
-        # attribution: since the previous session start (or the earliest live unit), every work commit names an open unit
-        live = [u for u in units if u["status"] != "closed"]
-        edge = (starts[-2] if len(starts) > 1 else starts[0]) if starts else min((u["opened_at"] for u in live), default=None)
-        window = [c for c in cs if edge and parse_ts(c["ts"]) >= parse_ts(edge)]
-        bad = [c for c in window if not (c["unit"] and unit_open_on(units, c["unit"], c["date"]))]
-        rep["attribution"] = "%d of %d commits since %s" % (len(window) - len(bad), len(window), "last session" if starts else "unit opened") if edge else "unavailable (no clock, no open unit)"
-        if bad:
-            rep["flags"].append("work-without-unit(%d commit%s)" % (len(bad), "s"[len(bad) == 1:]))
+    # sessions and attribution need no condition run, so every mode reports them
+    rep["handoffs"] = {"count": len(hs), "last": hs[-1][1] if hs else None}
+    since = utc_date(starts[0]) if starts else ""
+    n_days, n_hs = len(set(c["date"] for c in cs if c["date"] >= since)), sum(1 for h in hs if h[0] >= since)
+    rep["sessions"] = {"clock": None if starts is None else len(starts), "handoffs": len(hs),
+                       "commit_days": len(set(c["date"] for c in cs)), "divergent": bool(starts) and (
+                           (os.path.isdir(HANDOFFS) and n_hs < len(starts) - 1) or n_days > len(starts))}
+    # attribution: since the previous session start (or the earliest live unit), every work commit names an open unit
+    live = [u for u in units if u["status"] != "closed"]
+    edge = (starts[-2] if len(starts) > 1 else starts[0]) if starts else min((u["opened_at"] for u in live), default=None)
+    window = [c for c in cs if edge and parse_ts(c["ts"]) >= parse_ts(edge)]
+    bad = [c for c in window if not (c["unit"] and unit_open_on(units, c["unit"], c["date"]))]
+    rep["attribution"] = "%d of %d commits since %s" % (len(window) - len(bad), len(window), "last session" if starts else "unit opened") if edge else "unavailable (no clock, no open unit)"
+    if bad:
+        rep["flags"].append("work-without-unit(%d commit%s)" % (len(bad), "s"[len(bad) == 1:]))
     if at == "all":  # next: needs the conditions; the mid-session hooks never run them and never print it
         met = [u["name"] for u, r in zip(units, rep["units"]) if r["status"] != "closed" and r["condition"] == "pass"]
         rep["next"] = ("dokime init --write=intent" if rep["intent"] not in ("present", "stub") else
@@ -439,11 +440,11 @@ def cmd_session_start(a):
 
 
 def cmd_stop_hook(a):
-    """Stop hook: ledger-integrity rules only; exit 2 with stderr only under --strict."""
+    """Stop hook: flags only (no run: conditions, no next:); --strict exits 2 on ledger-integrity flags alone."""
     if hook_payload().get("stop_hook_active"):
         return {"skipped": True}, ""
     rep = run_check("stop")
-    if rep["flags"] and a.strict:
+    if a.strict and any(f.startswith(INTEGRITY) for f in rep["flags"]):
         raise Flagged(rep, render(rep), code=2)
     if rep["flags"]:
         return rep, json.dumps({"systemMessage": "dokime: " + " ".join(rep["flags"])})
@@ -457,7 +458,7 @@ def cmd_post_tool(a):
         return {"skipped": True}, ""
     write(seen, head + "\n")
     try:
-        rep = run_check("tool")
+        rep = run_check("stop")
         text = render(rep) if rep["flags"] else status_line(rep) if skill else ""
     except DokimeError as ex:  # a broken ledger must reach the agent, not only the terminal
         rep, text = {"error": str(ex)}, "dokime: %s" % ex
@@ -671,12 +672,12 @@ def build_parser():
     add("list", cmd_list, "list units")
     s = add("check", cmd_check, "print the status block; exit 1 on any flag")
     s.add_argument("--at", choices=("all", "stop"), default="all",
-                   help="stop = ledger integrity only (no run: conditions, no session rules)")
+                   help="stop = what the mid-session hooks see: no run: conditions, no next:")
     s.add_argument("--warn-only", action="store_true", help="exit 0 even when flagged")
     add("status", cmd_status, "one-line status")
     add("session-start", cmd_session_start, "SessionStart hook: print the check; tick the clock on startup|clear")
-    s = add("stop-hook", cmd_stop_hook, "Stop hook: integrity rules; blocks only with --strict")
-    s.add_argument("--strict", action="store_true", help="exit 2 (blocks) when flagged")
+    s = add("stop-hook", cmd_stop_hook, "Stop hook: flags only; --strict blocks on integrity flags")
+    s.add_argument("--strict", action="store_true", help="exit 2 (blocks) on an integrity flag: pin, evidence, missing unit, shallow history")
     add("post-tool", cmd_post_tool, "PostToolUse hook (Bash|Skill): after HEAD moves or a skill loads, flags only")
     s = add("init", cmd_init, "report missing pieces; write only with --write")
     s.add_argument("--write", metavar="PIECES", help="all or comma list of " + ",".join(PIECES))

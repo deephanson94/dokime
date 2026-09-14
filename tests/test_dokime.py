@@ -249,7 +249,9 @@ class CheckTest(RepoCase):
         self.assertEqual(code, 1)
         self.assertIn("intent-missing", json.loads(out)["flags"])
         self.assertEqual(run("check", "--warn-only")[0], 0)
-        self.assertEqual(run("check", "--at", "stop")[0], 0)
+        code, out, _ = run("check", "--at", "stop", "--json")
+        self.assertEqual((code, json.loads(out)["flags"]), (1, ["intent-missing"]))   # no condition needed, so stop sees it
+        self.assertNotIn("next", json.loads(out))
 
     def test_status_line(self):
         code, out, _ = run("status")
@@ -261,7 +263,7 @@ class CheckTest(RepoCase):
         d = dokime.load_unit("u"); d["done_condition"] = "y"; dokime.save_unit(d)
         sys.stdin = io.StringIO("{}")
         code, out, _ = run("stop-hook")
-        self.assertEqual((code, json.loads(out)["systemMessage"]), (0, "dokime: pin-changed(u)"))
+        self.assertEqual((code, json.loads(out)["systemMessage"]), (0, "dokime: clock-absent pin-changed(u)"))
         sys.stdin = io.StringIO("{}")
         code, _, err = run("stop-hook", "--strict")
         self.assertEqual(code, 2)
@@ -270,6 +272,32 @@ class CheckTest(RepoCase):
         self.assertEqual(run("stop-hook", "--strict")[0], 0)
         sys.stdin = sys.__stdin__
 
+
+    def test_stop_hook_reports_drift(self):
+        """Stop sees over-ceiling and work-without-unit (no condition needed); never met-but-open; --strict blocks on integrity only."""
+        os.environ["DOKIME_NOW"] = "2027-01-01T00:00:00+00:00"
+        run("open", "u", "--condition", "run: test -f w.txt", "--ceiling", "1")
+        os.environ["DOKIME_NOW"] = "2027-01-01T09:00:00+00:00"; self.start()
+        self.work_commit("w.txt", when="2027-01-01T10:00:00+00:00")   # condition now true, commit carries no trailer
+        os.environ["DOKIME_NOW"] = "2027-01-02T09:00:00+00:00"; self.start()   # second session: over the ceiling of 1
+        sys.stdin = io.StringIO("{}")
+        code, out, _ = run("stop-hook")
+        msg = json.loads(out)["systemMessage"]
+        self.assertEqual(code, 0)
+        self.assertIn("work-without-unit(1 commit)", msg)
+        self.assertIn("over-ceiling(u)", msg)
+        self.assertNotIn("met-but-open", msg)                          # run: conditions never execute here
+        sys.stdin = io.StringIO("{}")
+        code, out, err = run("stop-hook", "--strict")
+        self.assertEqual(code, 0)                                      # drift is reported, not blocking
+        self.assertIn("over-ceiling(u)", json.loads(out)["systemMessage"])
+        d = dokime.load_unit("u"); d["done_condition"] = "y"; dokime.save_unit(d)
+        sys.stdin = io.StringIO("{}")
+        code, _, err = run("stop-hook", "--strict")
+        self.assertEqual(code, 2)                                      # integrity still blocks under --strict
+        self.assertIn("PIN-CHANGED", err)
+        self.assertNotIn("next:", err)
+        sys.stdin = sys.__stdin__
 
 class PostToolTest(RepoCase):
     def post(self, payload='{"tool_name": "Bash", "tool_input": {"command": "git commit -m x"}}'):
@@ -292,7 +320,7 @@ class PostToolTest(RepoCase):
         self.assertNotIn("git commit", out)                           # tool_input is never echoed
         self.assertEqual(self.post(), "")                             # same HEAD: silent even though still flagged
         self.assertEqual(self.post(""), "")                           # no payload: HEAD gate only
-        self.assertNotIn("met-but-open", dokime.run_check("tool")["flags"])
+        self.assertNotIn("met-but-open", dokime.run_check("stop")["flags"])
         self.assertIn("met-but-open(u)", dokime.run_check("all")["flags"])
 
     def test_skill_always_reports_a_status_line(self):
@@ -534,7 +562,7 @@ class RegressionTest(RepoCase):
         rep = dokime.run_check("all")
         self.assertEqual(rep["attribution"], "1 of 3 commits since last session")
         self.assertIn("work-without-unit(2 commits)", rep["flags"])
-        self.assertNotIn("work-without-unit", " ".join(dokime.run_check("stop")["flags"]))
+        self.assertIn("work-without-unit(2 commits)", dokime.run_check("stop")["flags"])   # attribution needs no condition
         write("intent.md", fixture.INTENT + "\n"); git("add", "-A"); git("commit", "-qm", "gov", when="2026-03-01T13:00:00+00:00")
         self.assertEqual(len(dokime.commits()), 5)   # base, open (carries the test's vendored copy), 3 work; the intent.md edit is not work
         os.environ["DOKIME_NOW"] = "2026-03-02T09:00:00+00:00"; self.start()
@@ -683,7 +711,7 @@ class RegressionTest(RepoCase):
         self.open_at("u", "2026-03-01T00:00:00+00:00")
         rep = dokime.run_check("all")
         self.assertEqual((rep["hooks"], "clock-absent" in rep["flags"]), ("absent", True))
-        self.assertNotIn("clock-absent", dokime.run_check("stop")["flags"])
+        self.assertIn("clock-absent", dokime.run_check("stop")["flags"])
         run("init", "--write=hooks")                       # hooks configured, first session not started: not a flag
         rep = dokime.run_check("all")
         self.assertNotIn("clock-absent", rep["flags"])
