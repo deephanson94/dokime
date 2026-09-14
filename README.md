@@ -104,9 +104,9 @@ What `init` does to files you already have:
   not counted across clones or in CI, and it can be edited without a diff. It
   is a counter, not an audit record.
 - Existing commits and branches: never touched. `check` reads history and
-  writes nothing to git. On a shallow clone it prints `history: shallow`, and
-  `check --at stop` flags `history-shallow` once units exist because the pin
-  rule cannot run there; give CI `fetch-depth: 0`.
+  writes nothing to git. On a shallow clone it prints `history: shallow` and
+  flags `history-shallow` while a unit is open, because the pin rule cannot run
+  there; give CI `fetch-depth: 0`.
 
 The first session: open a unit and commit `units/`, start Claude Code and expect
 the status block in its context with a `next:` line, work and commit with the
@@ -176,8 +176,9 @@ next: dokime close build --evidence commit:<sha>
 
 The first line also reports `hooks: configured|absent` and `history: full|shallow`.
 On a shallow clone every pin reads `UNVERIFIABLE (shallow history)` and
-`check --at stop` flags `history-shallow`, since the pin rule cannot run; use
-`fetch-depth: 0` in CI.
+`check` flags `history-shallow` while a unit is open, since the pin rule cannot
+run; use `fetch-depth: 0` in CI. `check --at hook` is what the mid-session
+hooks see: no `run:` condition is executed and no `next:` is printed.
 
 `attribution: N of M commits since last session` counts work commits carrying a
 valid `Unit:` trailer; before the clock has ticked the window starts at the
@@ -205,11 +206,14 @@ marked `DIVERGENT` when commits landed on a day with no session, or, only if a
   commit days since open, so the agent can only inflate its own count.
 - `Stop` runs `dokime stop-hook`: every flag that needs no `run:` condition
   (`over-ceiling`, `work-without-unit`, pin and evidence), never `met-but-open`
-  and never `next:`. By default it is silent when clean, prints a
+  and never `next:`. It speaks once per change: the same HEAD and the same
+  flags are said once, a commit or a new flag says them again, and a session
+  start forgets what was said. By default it is silent when clean, prints a
   `systemMessage` when flagged, and exits 0. With `--strict` it exits 2 on the
-  ledger-integrity flags alone (pin, evidence, a missing unit file, shallow
-  history), which sends the block back to the model; drift flags stay a
-  `systemMessage`.
+  ledger-integrity flags alone (pin, evidence, a missing unit file), which sends
+  the block back to the model; drift flags stay a `systemMessage`. CI runs
+  `stop-hook --strict </dev/null` as its blocking step, so the gate and the
+  hook can never disagree on that set.
 - `PostToolUse` (matcher `Bash|Skill`) runs `dokime post-tool` after every Bash
   command and every skill load. It is silent unless HEAD moved since its last
   run (a commit, amend, rebase or checkout, however it was made; the last-seen

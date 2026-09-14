@@ -116,7 +116,7 @@ class PinTest(RepoCase):
         self.assertTrue(dokime.pin_status(dokime.load_unit("u")).startswith("CHANGED (sha256"))
         d["done_condition_sha256"] = dokime.sha256_text("run: false"); dokime.save_unit(d)
         self.assertTrue(dokime.pin_status(dokime.load_unit("u")).startswith("CHANGED since"))
-        rep = dokime.run_check("stop")
+        rep = dokime.run_check("hook")
         self.assertIn("pin-changed(u)", rep["flags"])
 
 
@@ -250,7 +250,7 @@ class CheckTest(RepoCase):
         self.assertEqual(code, 1)
         self.assertIn("intent-missing", json.loads(out)["flags"])
         self.assertEqual(run("check", "--warn-only")[0], 0)
-        code, out, _ = run("check", "--at", "stop", "--json")
+        code, out, _ = run("check", "--at", "hook", "--json")
         self.assertEqual((code, json.loads(out)["flags"]), (1, ["intent-missing"]))   # no condition needed, so stop sees it
         self.assertNotIn("next", json.loads(out))
 
@@ -290,8 +290,13 @@ class CheckTest(RepoCase):
         self.assertNotIn("met-but-open", msg)                          # run: conditions never execute here
         sys.stdin = io.StringIO("{}")
         code, out, err = run("stop-hook", "--strict")
-        self.assertEqual(code, 0)                                      # drift is reported, not blocking
-        self.assertIn("over-ceiling(u)", json.loads(out)["systemMessage"])
+        self.assertEqual((code, out), (0, ""))                         # drift never blocks, and the same HEAD + flags is said once
+        self.work_commit("v.txt", when="2027-01-02T10:00:00+00:00")   # HEAD moved: the flags are spoken again
+        sys.stdin = io.StringIO("{}")
+        self.assertIn("work-without-unit(2 commits)", json.loads(run("stop-hook")[1])["systemMessage"])
+        self.start()                                                   # a tick forgets what was said
+        sys.stdin = io.StringIO("{}")
+        self.assertIn("over-ceiling(u)", json.loads(run("stop-hook")[1])["systemMessage"])
         d = dokime.load_unit("u"); d["done_condition"] = "y"; dokime.save_unit(d)
         sys.stdin = io.StringIO("{}")
         code, _, err = run("stop-hook", "--strict")
@@ -321,7 +326,7 @@ class PostToolTest(RepoCase):
         self.assertNotIn("git commit", out)                           # tool_input is never echoed
         self.assertEqual(self.post(), "")                             # same HEAD: silent even though still flagged
         self.assertEqual(self.post(""), "")                           # no payload: HEAD gate only
-        self.assertNotIn("met-but-open", dokime.run_check("stop")["flags"])
+        self.assertNotIn("met-but-open", dokime.run_check("hook")["flags"])
         self.assertIn("met-but-open(u)", dokime.run_check("all")["flags"])
 
     def test_skill_always_reports_a_status_line(self):
@@ -563,7 +568,7 @@ class RegressionTest(RepoCase):
         rep = dokime.run_check("all")
         self.assertEqual(rep["attribution"], "1 of 3 commits since last session")
         self.assertIn("work-without-unit(2 commits)", rep["flags"])
-        self.assertIn("work-without-unit(2 commits)", dokime.run_check("stop")["flags"])   # attribution needs no condition
+        self.assertIn("work-without-unit(2 commits)", dokime.run_check("hook")["flags"])   # attribution needs no condition
         write("intent.md", fixture.INTENT + "\n"); git("add", "-A"); git("commit", "-qm", "gov", when="2026-03-01T13:00:00+00:00")
         self.assertEqual(len(dokime.commits()), 5)   # base, open (carries the test's vendored copy), 3 work; the intent.md edit is not work
         os.environ["DOKIME_NOW"] = "2026-03-02T09:00:00+00:00"; self.start()
@@ -598,7 +603,7 @@ class RegressionTest(RepoCase):
         self.assertIn("trailer 'Unit: u'", dokime.run_check("all")["next"])
         write("ok", "")
         self.assertTrue(dokime.run_check("all")["next"].startswith("dokime close u"))
-        self.assertNotIn("next", dokime.run_check("stop"))
+        self.assertNotIn("next", dokime.run_check("hook"))
         self.assertIn("\nnext: ", dokime.render(dokime.run_check("all")))
 
     def test_offsets_do_not_move_the_window_or_the_candidates(self):
@@ -624,7 +629,7 @@ class RegressionTest(RepoCase):
         write("units/bad.json", "{not json")
         sys.stdin = io.StringIO('{"source": "startup"}')
         code, out, _ = run("session-start")
-        self.assertEqual((code, out.startswith("dokime: units/bad.json"), "next: fix the ledger" in out), (0, True, True))
+        self.assertEqual((code, out.startswith("dokime: units/bad.json"), "next: dokime check" in out), (0, True, True))
 
     def test_next_when_intent_missing(self):
         os.remove("intent.md")
@@ -712,7 +717,7 @@ class RegressionTest(RepoCase):
         self.open_at("u", "2026-03-01T00:00:00+00:00")
         rep = dokime.run_check("all")
         self.assertEqual((rep["hooks"], "clock-absent" in rep["flags"]), ("absent", True))
-        self.assertIn("clock-absent", dokime.run_check("stop")["flags"])
+        self.assertIn("clock-absent", dokime.run_check("hook")["flags"])
         run("init", "--write=hooks")                       # hooks configured, first session not started: not a flag
         rep = dokime.run_check("all")
         self.assertNotIn("clock-absent", rep["flags"])
@@ -730,8 +735,10 @@ class RegressionTest(RepoCase):
             os.chdir(clone)
             rep = dokime.run_check("all")
             self.assertEqual((rep["history"], rep["units"][0]["pin"]), ("shallow", "UNVERIFIABLE (shallow history)"))
-            self.assertNotIn("history-shallow", rep["flags"])
-            self.assertIn("history-shallow", dokime.run_check("stop")["flags"])
+            self.assertIn("history-shallow", rep["flags"])                     # every mode: the human running check must see it
+            self.assertIn("history-shallow", dokime.run_check("hook")["flags"])
+            sys.stdin = io.StringIO("{}")
+            self.assertEqual(run("stop-hook", "--strict")[0], 0)             # a checkout shape is not an integrity flag
         finally:
             os.chdir(self.tmp)
             shutil.rmtree(clone)
@@ -749,8 +756,11 @@ class RegressionTest(RepoCase):
         os.environ["DOKIME_NESTED"] = "1"
         try:
             self.assertEqual(dokime.run_condition("run: true"), "unverified")
+            self.assertIn("conditions-disabled", dokime.run_check("all")["flags"])   # a kill switch is a state, never a pass
+            self.assertNotIn("conditions-disabled", dokime.run_check("hook")["flags"])
         finally:
             del os.environ["DOKIME_NESTED"]
+        self.assertNotIn("conditions-disabled", dokime.run_check("all")["flags"])
 
     def test_init_dry_run_shows_every_piece(self):
         out = run("init")[1]

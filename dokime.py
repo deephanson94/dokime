@@ -8,7 +8,8 @@ import argparse, datetime, difflib, hashlib, json, os, re, shutil, subprocess, s
 UNITS, HANDOFFS, INTENT = "units", "handoffs", "intent.md"
 CLOCK = os.path.join(".dokime", "sessions.log")
 STATUSES = ("open", "met", "closed")
-INTEGRITY = ("pin-changed", "evidence-invalid", "unit-missing", "history-shallow")  # the only flags --strict blocks on
+INTEGRITY = ("pin-changed", "evidence-invalid", "unit-missing")  # the only flags --strict blocks on
+STOP_SEEN = os.path.join(".dokime", "stop")  # session count + HEAD + flags the Stop hook last spoke; it speaks on change
 KINDS = ("commit", "artifact", "sha256")
 SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -333,9 +334,12 @@ def run_check(at="all"):
            "history": "shallow" if git("rev-parse", "--is-shallow-repository") == "true" else "full"}
     if rep["intent"] not in ("present", "stub"):
         rep["flags"].append("intent-" + rep["intent"])
-    if at == "stop" and rep["history"] == "shallow" and units:
+    live = [u for u in units if u["status"] != "closed"]
+    if rep["history"] == "shallow" and live:
         rep["flags"].append("history-shallow")
-    if starts is None and rep["hooks"] == "absent" and any(u["status"] != "closed" for u in units):
+    if at == "all" and os.environ.get("DOKIME_NESTED") and any(u["done_condition"].startswith("run:") for u in live):
+        rep["flags"].append("conditions-disabled")  # every run: condition reads unverified; that is a state, not a pass
+    if starts is None and rep["hooks"] == "absent" and live:
         rep["flags"].append("clock-absent")
     ever = (git("log", "--diff-filter=A", "--format=", "--name-only", "--", UNITS) or "").split()
     for path in sorted(set(ever)):
@@ -353,7 +357,6 @@ def run_check(at="all"):
                        "commit_days": len(set(c["date"] for c in cs)), "divergent": bool(starts) and (
                            (os.path.isdir(HANDOFFS) and n_hs < len(starts) - 1) or n_days > len(starts))}
     # attribution: since the previous session start (or the earliest live unit), every work commit names an open unit
-    live = [u for u in units if u["status"] != "closed"]
     edge = (starts[-2] if len(starts) > 1 else starts[0]) if starts else min((u["opened_at"] for u in live), default=None)
     window = [c for c in cs if edge and parse_ts(c["ts"]) >= parse_ts(edge)]
     bad = [c for c in window if not (c["unit"] and unit_open_on(units, c["unit"], c["date"]))]
@@ -434,21 +437,22 @@ def cmd_session_start(a):
     try:
         rep = run_check("all")
     except DokimeError as ex:  # the block must reach the agent: SessionStart shows stdout only on exit 0
-        return {"error": str(ex), "ticked": tick}, "dokime: %s\nnext: fix the ledger, then dokime check" % ex
+        return {"error": str(ex), "ticked": tick}, "dokime: %s\nnext: dokime check" % ex
     rep["ticked"] = tick
     return rep, render(rep) if tick or source == "compact" or rep["flags"] else status_line(rep)
 
 
 def cmd_stop_hook(a):
-    """Stop hook: flags only (no run: conditions, no next:); --strict exits 2 on ledger-integrity flags alone."""
+    """Stop hook: flags only, spoken once per change of HEAD or flag set; --strict exits 2 on ledger-integrity flags alone."""
     if hook_payload().get("stop_hook_active"):
         return {"skipped": True}, ""
-    rep = run_check("stop")
-    if a.strict and any(f.startswith(INTEGRITY) for f in rep["flags"]):
+    rep = run_check("hook")
+    if a.strict and any(f.partition("(")[0] in INTEGRITY for f in rep["flags"]):
         raise Flagged(rep, render(rep), code=2)
-    if rep["flags"]:
-        return rep, json.dumps({"systemMessage": "dokime: " + " ".join(rep["flags"])})
-    return rep, ""
+    cur = "%s %s %s" % (rep["sessions"]["clock"], git("rev-parse", "HEAD") or "-", " ".join(rep["flags"]))
+    quiet = cur == (read(STOP_SEEN).strip() if os.path.exists(STOP_SEEN) else None)
+    write(STOP_SEEN, cur + "\n")
+    return (rep, json.dumps({"systemMessage": "dokime: " + " ".join(rep["flags"])})) if rep["flags"] and not quiet else (rep, "")
 
 
 def cmd_post_tool(a):
@@ -458,7 +462,7 @@ def cmd_post_tool(a):
         return {"skipped": True}, ""
     write(seen, head + "\n")
     try:
-        rep = run_check("stop")
+        rep = run_check("hook")
         text = render(rep) if rep["flags"] else status_line(rep) if skill else ""
     except DokimeError as ex:  # a broken ledger must reach the agent, not only the terminal
         rep, text = {"error": str(ex)}, "dokime: %s" % ex
@@ -671,13 +675,13 @@ def build_parser():
         s.add_argument("--force", metavar="REASON", help="record REASON and override verification failures")
     add("list", cmd_list, "list units")
     s = add("check", cmd_check, "print the status block; exit 1 on any flag")
-    s.add_argument("--at", choices=("all", "stop"), default="all",
-                   help="stop = what the mid-session hooks see: no run: conditions, no next:")
+    s.add_argument("--at", choices=("all", "hook"), default="all",
+                   help="hook = what the mid-session hooks see: no run: conditions, no next:")
     s.add_argument("--warn-only", action="store_true", help="exit 0 even when flagged")
     add("status", cmd_status, "one-line status")
     add("session-start", cmd_session_start, "SessionStart hook: print the check; tick the clock on startup|clear")
     s = add("stop-hook", cmd_stop_hook, "Stop hook: flags only; --strict blocks on integrity flags")
-    s.add_argument("--strict", action="store_true", help="exit 2 (blocks) on an integrity flag: pin, evidence, missing unit, shallow history")
+    s.add_argument("--strict", action="store_true", help="exit 2 (blocks) on an integrity flag: pin, evidence, missing unit")
     add("post-tool", cmd_post_tool, "PostToolUse hook (Bash|Skill): after HEAD moves or a skill loads, flags only")
     s = add("init", cmd_init, "report missing pieces; write only with --write")
     s.add_argument("--write", metavar="PIECES", help="all or comma list of " + ",".join(PIECES))
